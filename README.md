@@ -105,7 +105,10 @@ YAML 路径必须由调用方**显式传入**（见 `run.py`），不会自动�
 两者都**不设置时行为与从前完全一致**，本地开发不受影响。设计动机分别见
 `liz_bot/runtime_paths.py` 与 `liz_bot/healthz.py` 的模块文档。
 
-> 📦 **完整部署步骤见 [`DEPLOY_CLAWCLOUD.md`](DEPLOY_CLAWCLOUD.md)**
+> 📦 **上线前先在本地彩排：[`DEPLOY_LOCAL.md`](DEPLOY_LOCAL.md)**
+> —— 用「云端的方式」（持久化卷 + 探活端口）在本地跑一遍，并验证重启后别名不丢。
+>
+> 📦 **完整云端部署步骤见 [`DEPLOY_CLAWCLOUD.md`](DEPLOY_CLAWCLOUD.md)**
 > （ClawCloud Run：免绑卡、免费实例不休眠、支持持久化卷）。
 > 仓库根目录的 `Dockerfile` 可直接用于任何容器平台。
 
@@ -118,6 +121,17 @@ python run.py
 ```
 
 Windows 下可直接双击 `start.bat`。
+
+**推荐用彩排脚本代替直接运行** —— 它会按云端的取值设好环境变量，
+把云端才暴露的两类问题（数据目录、探活端口）提前到本地：
+
+```bash
+python _tools/local_rehearsal.py          # 彩排：临时卷 + 健康检查端口
+python _tools/local_rehearsal.py --plain  # 等价于直接 python run.py
+```
+
+**跑两次**即可验证「重启后别名不丢」（第二次会报告卷上已有别名表且不会覆盖）。
+详见 [`DEPLOY_LOCAL.md`](DEPLOY_LOCAL.md)。
 
 用容器跑（本地复现线上形态）：
 
@@ -138,6 +152,7 @@ projectsega/
 ├── requirements.txt
 ├── Dockerfile              容器镜像（任意容器平台可用）
 ├── .dockerignore
+├── DEPLOY_LOCAL.md         本地部署验证（上线前彩排）
 ├── DEPLOY_CLAWCLOUD.md     部署说明（ClawCloud Run）
 ├── .env.example            API 凭据模板
 ├── 三套SDGB实现对比.md       sdgb / eaquira / Lionheart 三套旧实现的差异分析
@@ -192,7 +207,7 @@ projectsega/
 | `liz_bot/emoji*/` | 体积大 / 冗余素材 |
 | `legacy_sdgb_stack/` | 旧实现存档（约 200MB），且内含明文凭据 |
 | `legacy_qqbot_stack/` | 旧 QQ 技术栈（go_cqhttp + unidbg-fetch-qsign） |
-| `_tools/` | 开发期工具（类型转换器、验证脚本）。**例外**：三个部署自检脚本随仓库分发（`verify_deploy_paths.py` / `simulate_container.py` / `check_wheels.py`） |
+| `_tools/` | 开发期工具（类型转换器、验证脚本）。**例外**：四个部署自检脚本随仓库分发（`verify_deploy_paths.py` / `simulate_container.py` / `check_wheels.py` / `local_rehearsal.py`） |
 | `_backup/` | 备份 |
 | `bot_log/` | 运行日志 |
 

@@ -65,12 +65,13 @@ eaquira-master/
 # ==========================================================================
 # _tools/ 内含类型转换器与各套验证脚本，属开发期工具，不随项目分发。
 #
-# 例外：三个**部署自检脚本**随仓库分发。它们的共同点是能在部署前发现问题，
+# 例外：四个**部署自检脚本**随仓库分发。它们的共同点是能在部署前发现问题，
 # 而对应的问题在运行时表现为"静默丢数据"或"容器起来才炸"，极难排查：
 #   verify_deploy_paths.py   持久化卷与 LIZ_DATA_DIR 是否配对
 #   simulate_container.py    .dockerignore 有没有误伤运行必需文件
 #   check_wheels.py          依赖在 linux/amd64 上是否需要源码编译
-# 详见 DEPLOY_CLAWCLOUD.md。
+#   local_rehearsal.py       用「云端的方式」在本地跑一遍（卷 + 探活端口）
+# 详见 DEPLOY_CLAWCLOUD.md / DEPLOY_LOCAL.md。
 #
 # 注意必须写成 `_tools/*` 而不是 `_tools/`：Git 无法在**目录被整体排除**时
 # 反排除其中的文件，只能"排除目录内容 + 单独放行文件"。
@@ -78,6 +79,10 @@ _tools/*
 !_tools/verify_deploy_paths.py
 !_tools/simulate_container.py
 !_tools/check_wheels.py
+!_tools/local_rehearsal.py
+
+# 本地彩排产生的数据卷（local_rehearsal.py 的默认卷目录）—— 不上传
+.local_volume/
 
 # ==========================================================================
 # 备份 —— 不上传
