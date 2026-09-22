@@ -2,7 +2,7 @@
 
 配置来源优先级：**环境变量 > 本地 YAML**。
 
-部署到云平台（如 ClawCloud Run）时只需设置环境变量::
+部署到云平台（容器平台或 VPS）时只需设置环境变量::
 
     QQ_BOT_APPID=<你的 AppID>
     QQ_BOT_SECRET=<你的 AppSecret>

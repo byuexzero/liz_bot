@@ -4,7 +4,8 @@
 > 云端跑通只是把本地这一遍重复一次；反过来，凭据、指令、订阅上的问题
 > 在本地就能发现，比在云平台日志里翻要快得多。
 
-配套文档：[`DEPLOY_CLAWCLOUD.md`](DEPLOY_CLAWCLOUD.md)（云端步骤）、
+配套文档：[`DEPLOY_CN.md`](DEPLOY_CN.md)（国内平台步骤）、
+[`DEPLOY_PAAS.md`](DEPLOY_PAAS.md)（容器平台通用）、
 [`README.md`](README.md)（部署提示）。
 
 ---
@@ -25,7 +26,7 @@ python _tools/local_rehearsal.py
 直接跑能启动，但它**证明不了云端能跑**。云端与本地只有两处差异，
 而这两处恰好都是**静默失败**的重灾区 —— 不报错，但数据没了 / 容器被反复重启：
 
-| 维度 | 本地直接跑 | 云端（ClawCloud Run） | 怎么在本地模拟 |
+| 维度 | 本地直接跑 | 云端 / VPS | 怎么在本地模拟 |
 |---|---|---|---|
 | 数据目录 | 仓库内，天然持久 | 挂载卷，不挂就**每次重启清空** | `LIZ_DATA_DIR` |
 | 监听端口 | 不监听，无所谓 | 平台按「有没有端口」判活 | `HEALTHZ_PORT` |
@@ -160,7 +161,7 @@ python _tools/simulate_container.py               # .dockerignore 有没有误�
 python _tools/check_wheels.py                     # linux/amd64 依赖是否需要编译
 ```
 
-四条全绿 + 群里 `/id 8` 有回复 → 可以按 [`DEPLOY_CLAWCLOUD.md`](DEPLOY_CLAWCLOUD.md) 上云。
+四条全绿 + 群里 `/id 8` 有回复 → 可以按 [`DEPLOY_CN.md`](DEPLOY_CN.md) 上云。
 
 ---
 
