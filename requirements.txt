@@ -1,0 +1,63 @@
+# ============================================================
+# Project Sega - Dependencies
+# 舞萌 DX (maimai DX) QQ 群机器人 + 服务端 API 工具链
+# ============================================================
+#
+# Python 版本要求: 3.10 - 3.12
+#   - 当前机器人运行于 Python 3.10（qq-botpy 依赖所限）
+#   - 部分模块（如 download.py 的 `str | Path` 类型注解）需 3.10+
+#
+# 安装:
+#   pip install -r requirements.txt
+#
+# 分组说明见下方注释；如需最小安装请按需挑选对应分组。
+# ============================================================
+
+# ---------- 1. QQ 群机器人 (liz_bot / run.py) ----------
+qq-botpy>=1.2.1             # 腾讯官方机器人 SDK（import 名为 botpy）
+PyYAML>=6.0.3               # botpy.ext.cog_yaml 读取 config.yaml
+
+# ---------- 2. 舞萌服务端 API 客户端 (maimai/) ----------
+httpx>=0.28.1               # 所有 API 请求（同步 + 异步）
+pycryptodome>=3.23.0        # AES-CBC 加解密（import 名为 Crypto）
+pytz>=2025.2                # 接口时间戳需 Asia/Tokyo / Asia/Shanghai 时区
+tqdm>=4.67.1                # maimai/crawler 批量抓取进度条
+python-dotenv>=1.0.0        # 读取 .env（未安装时 maimai.config 会退回内置解析器）
+
+# ---------- 3. 曲库检索 (liz_bot/command_handler.py) ----------
+ijson>=3.4.0.post0          # 流式读取大型 songs.json / alias.json（避免全量载入内存）
+
+# ---------- 4. 表情包上传 (liz_bot/pic_haddler.py) ----------
+aiohttp>=3.13.2             # 异步上传媒体到腾讯服务器
+
+# ---------- 5. GitHub 镜像下载器 (download.py) ----------
+requests>=2.32.5
+urllib3>=2.6.2
+
+# ---------- 6. AI 对话 (liz_bot/qqgroup-ai-bot.py) ----------
+qianfan>=0.4.12.3           # 百度千帆 ERNIE 大模型 SDK
+aiofiles>=25.1.0            # 异步读写 ai_chat 会话记录
+
+# ============================================================
+# 备注
+# ============================================================
+# 1. 代理为可选功能，通过 .env 的 PROXY_URL 配置（留空 = 直连）。
+#    若填 socks5:// 开头的地址，需额外安装:
+#        httpx[socks]
+#    http:// / https:// 代理则无需额外依赖。
+#    （旧实现曾把 SOCKS5 代理硬编码在源码里，现已移除。）
+#
+# 2. 已统一使用 pycryptodome 而非 pycrypto（后者早已停止维护）。
+#    import 名 `Crypto` 两者相同，注意不要同时安装。
+#
+# 3. 未收录的运行时依赖（标准库）:
+#    json / zlib / hashlib / sqlite3 / asyncio / threading 等无需安装。
+#
+# 4. 运行 maimai 包前需先准备配置文件:
+#        cp .env.example .env   # 然后填入真实密钥与凭据
+#    .env 已被 .gitignore 排除，不会入库。
+#
+# 5. 旧实现已归档，不在本 requirements 范围:
+#    - legacy_sdgb_stack/   旧 sdgb / eaquira / Lionheart，见其 README.md
+#    - legacy_qqbot_stack/  老版 QQ 机器人技术栈，见其 README.md
+# ============================================================
