@@ -54,3 +54,6 @@ liz_bot/maimaiDX_songs/.github
 *.saz
 *.reg
 三套SDGB实现对比.md
+
+# deploy/ 是给 VPS（systemd）用的，容器里没有 systemd，放进去只会让人困惑
+deploy

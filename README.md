@@ -99,7 +99,7 @@ YAML 路径必须由调用方**显式传入**（见 `run.py`），不会自动�
 
 | 环境变量 | 作用 | 不设的后果 |
 |---|---|---|
-| `LIZ_DATA_DIR` | 指向挂载的持久化卷（如 `/data`） | 容器重启后用户新增的别名**静默丢失** |
+| `LIZ_DATA_DIR` | 把可写数据挪出仓库（容器上是挂载卷，如 `/data`） | 容器重启后别名**静默丢失**；VPS 上则会让 `git pull` 因 `alias.json` 被改而冲突 |
 | `HEALTHZ_PORT` | 让容器监听一个端口供平台探活 | 可能被判为不健康而反复重启，表现为莫名掉线 |
 
 两者都**不设置时行为与从前完全一致**，本地开发不受影响。设计动机分别见
@@ -108,7 +108,11 @@ YAML 路径必须由调用方**显式传入**（见 `run.py`），不会自动�
 > 📦 **上线前先在本地彩排：[`DEPLOY_LOCAL.md`](DEPLOY_LOCAL.md)**
 > —— 用「云端的方式」（持久化卷 + 探活端口）在本地跑一遍，并验证重启后别名不丢。
 >
-> 📦 **完整云端部署步骤见 [`DEPLOY_CLAWCLOUD.md`](DEPLOY_CLAWCLOUD.md)**
+> 📦 **国内平台部署：[`DEPLOY_CN.md`](DEPLOY_CN.md)**
+> —— 推荐腾讯云轻量（首年 ¥38，且**无需备案**）、阿里云 ECS（¥99/年 续费同价），
+> 含 systemd 开机自启配置。
+>
+> 📦 **境外平台部署见 [`DEPLOY_CLAWCLOUD.md`](DEPLOY_CLAWCLOUD.md)**
 > （ClawCloud Run：免绑卡、免费实例不休眠、支持持久化卷）。
 > 仓库根目录的 `Dockerfile` 可直接用于任何容器平台。
 
@@ -153,7 +157,10 @@ projectsega/
 ├── Dockerfile              容器镜像（任意容器平台可用）
 ├── .dockerignore
 ├── DEPLOY_LOCAL.md         本地部署验证（上线前彩排）
+├── DEPLOY_CN.md            国内平台部署（轻量服务器 / ECS / Sealos）
 ├── DEPLOY_CLAWCLOUD.md     部署说明（ClawCloud Run）
+├── deploy/
+│   └── liz-bot.service     systemd 单元（VPS 开机自启）
 ├── .env.example            API 凭据模板
 ├── 三套SDGB实现对比.md       sdgb / eaquira / Lionheart 三套旧实现的差异分析
 ├── liz_bot/                QQ 群机器人

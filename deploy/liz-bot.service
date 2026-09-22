@@ -1,0 +1,61 @@
+# Liz QQ 机器人 —— systemd 服务单元
+#
+# 用于轻量应用服务器 / ECS 等 VPS 部署（见 DEPLOY_CN.md）。
+#
+# 安装：
+#   sudo cp deploy/liz-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now liz-bot
+#
+# 使用前请按实际情况修改下面三处：
+#   1. WorkingDirectory / ExecStart 里的 /opt/liz_bot  → 你的仓库路径
+#   2. User                            → 你的用户名
+#   3. /etc/liz-bot.env                → 凭据文件（见下）
+#
+# 凭据文件 /etc/liz-bot.env（权限必须 600）：
+#   QQ_BOT_APPID=你的AppID
+#   QQ_BOT_SECRET=你的AppSecret
+#   LIZ_DATA_DIR=/var/lib/liz_bot
+#   PYTHONUNBUFFERED=1
+#
+# 为什么用 EnvironmentFile 而不是 Environment=：
+#   Environment= 的值对任何能执行 `systemctl show` 的用户都可见，
+#   会把 AppSecret 泄漏给同机其他用户。EnvironmentFile 只受文件权限保护。
+
+[Unit]
+Description=Liz QQ Bot (舞萌 DX / maimai DX)
+Documentation=file:/opt/liz_bot/DEPLOY_CN.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lizbot
+WorkingDirectory=/opt/liz_bot
+
+# 凭据与路径（权限 600，见上方说明）
+EnvironmentFile=/etc/liz-bot.env
+
+ExecStart=/opt/liz_bot/.venv/bin/python /opt/liz_bot/run.py
+
+# 长连接断开或进程崩溃后自动拉起。
+# 10 秒间隔足以避开腾讯服务器侧的重连限制，又不会让停机时间过长。
+Restart=always
+RestartSec=10
+
+# 日志走 journald，用 `journalctl -u liz-bot -f` 查看。
+# 注意：bot_log/ 目录里还会有一份 botpy 自己的日志（由 LIZ_DATA_DIR 决定位置）。
+StandardOutput=journal
+StandardError=journal
+
+# ---- 基础加固 ----------------------------------------------------------
+# 机器人只需要：读代码、写数据目录、向外发起 HTTPS/WSS 连接。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# 唯一允许写入的位置，必须与 LIZ_DATA_DIR 一致
+ReadWritePaths=/var/lib/liz_bot
+
+[Install]
+WantedBy=multi-user.target
