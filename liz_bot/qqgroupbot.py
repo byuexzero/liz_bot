@@ -8,13 +8,12 @@ import botpy
 from botpy import logging
 from botpy.message import GroupMessage
 from botpy import logging
-from botpy.ext.cog_yaml import read
 from botpy.ext.command_util import Commands
 from botpy.message import GroupMessage, Message
 from liz_bot.command_handler import handle_command, parse_command
+from liz_bot.config import BotConfig, load_bot_config
 
 _log = logging.get_logger()
-test_config = read(os.path.join(os.path.dirname(__file__), "./config/config.yaml"))
 
 # 日志文件统一存放目录（项目根目录下的 bot_log/）
 # botpy 默认把日志写到 os.getcwd()，此处显式指定为 bot_log 文件夹
@@ -102,11 +101,16 @@ class MyClient(botpy.Client):
 
 
 # 启动机器人
-def run_bot() -> None:
+def run_bot(config: BotConfig) -> None:
+    """启动机器人。
+
+    :param config: 机器人凭据，由调用方显式传入（见 ``liz_bot/config.py``）。
+        不再从模块级全局变量读取，便于测试与在云平台上改用环境变量。
+    """
     intents = botpy.Intents(public_messages=True)
     # 不启用 botpy 默认 handler（避免在 cwd 再生成一份 botpy.log），改用指向 bot_log/ 的 handler
     client = MyClient(intents=intents, ext_handlers=LOG_FILE_HANDLER)
-    client.run(appid=test_config["appid"], secret=test_config["secret"])
+    client.run(appid=config.appid, secret=config.secret)
 
 if __name__ == "__main__":
-    run_bot()
+    run_bot(load_bot_config())

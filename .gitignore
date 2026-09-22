@@ -36,8 +36,14 @@ env/
 .env
 
 # QQ 机器人配置。含真实 appid / secret，泄露即可冒用机器人身份。
-# 模板见 liz_bot/config/*.example.yaml。
+#
+# 配置已改为优先读环境变量（QQ_BOT_APPID / QQ_BOT_SECRET，见 liz_bot/config.py），
+# 下面的 YAML 只是本地开发的回退，云端部署无需提供。
+#
+# 必须反排除 *.example.yaml —— 它们是模板，应当入库。
+# 少了这一行，`liz_bot/config/*.yaml` 会把模板一起吞掉（曾真实发生）。
 liz_bot/config/*.yaml
+!liz_bot/config/*.example.yaml
 
 # ==========================================================================
 # 旧实现存档 —— 不上传
@@ -73,10 +79,18 @@ _backup/
 liz_bot/emoji_gif/
 liz_bot/emoji/
 
-# 歌曲数据库（约 2MB），来自上游 maimaiDX-songs 数据集，属第三方内容。
-# 缺失会导致 /id 等歌曲查询指令不可用。
-# 恢复方式见根目录 README.md「缺失素材」一节。
-liz_bot/maimaiDX_songs/
+# 歌曲数据库（songs.json 约 1MB + alias.json 约 350KB）**随仓库分发**：
+# 查歌是核心功能，缺了它 /id、/bm、/song、/name 等指令全部不可用。
+# 上游 maimaiDX-songs 为第三方数据集，授权说明见根目录 README.md。
+# 注意：此处刻意不再忽略 liz_bot/maimaiDX_songs/ 本身。
+#
+# 但该目录下有两类内容不随仓库分发：
+#   .github/   上游数据集自己的 CI 配置。本项目代码从不读取，且它引用的是
+#              上游仓库的 GH_PAT secret，与本项目无关（嵌套 workflows 也不会被执行）。
+#   compress/  上游预先压缩好的 JSON 副本（约 380KB）。本项目只读原始 JSON，
+#              `song_query.py` 走的是 ijson 流式解析，用不到这些 .zlib。
+liz_bot/maimaiDX_songs/.github/
+liz_bot/maimaiDX_songs/compress/
 
 # ==========================================================================
 # AI 工作区数据

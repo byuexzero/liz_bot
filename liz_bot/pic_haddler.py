@@ -2,12 +2,11 @@ import os
 import asyncio
 import aiohttp
 import time
-from botpy.ext.cog_yaml import read
 from botpy.message import GroupMessage, Message
+from liz_bot.config import BotConfig
 
 # 全局配置
 # 缓存AccessToken及过期时间
-test_config = read(os.path.join(os.path.dirname(__file__), "./config/config.yaml"))
 TOKEN_CACHE = {
     "access_token": "",
     "expires_at": 0  # 过期时间戳（秒）
@@ -25,8 +24,11 @@ EMOJI_FILE_LIST = [
 ]
 
 
-async def get_access_token():
-    """获取/刷新AccessToken（鉴权核心）"""
+async def get_access_token(config: BotConfig):
+    """获取/刷新AccessToken（鉴权核心）
+
+    :param config: 机器人凭据，由调用方显式传入。
+    """
     now = int(time.time())
     if TOKEN_CACHE["access_token"] and TOKEN_CACHE["expires_at"] > now:
         return TOKEN_CACHE["access_token"]
@@ -35,7 +37,7 @@ async def get_access_token():
         resp = await session.post(
             url="https://bots.qq.com/app/getAppAccessToken",
             headers={"Content-Type": "application/json"},
-            json={"appId": test_config["appid"], "clientSecret": test_config["secret"]}
+            json={"appId": config.appid, "clientSecret": config.secret}
         )
         res = await resp.json()
         TOKEN_CACHE["access_token"] = res["access_token"]
@@ -43,11 +45,17 @@ async def get_access_token():
         return res["access_token"]
 
 
-async def upload_file_by_index(message: GroupMessage, file_index: int, srv_send_msg: bool = False):
+async def upload_file_by_index(
+    message: GroupMessage,
+    file_index: int,
+    config: BotConfig,
+    srv_send_msg: bool = False,
+):
     """
     按EMOJI_FILE_LIST索引上传本地文件到群聊（严格对齐官方接口）
     :param message: 群消息对象（获取group_openid）
     :param file_index: EMOJI_FILE_LIST列表索引（整数）
+    :param config: 机器人凭据，由调用方显式传入（不再读模块级全局配置）
     :param srv_send_msg: 是否直接发送到群聊（占用主动频次，默认False）
     :return: 接口指定返回参数（file_uuid/file_info/ttl/id）
     """
@@ -61,7 +69,7 @@ async def upload_file_by_index(message: GroupMessage, file_index: int, srv_send_
     local_path = file_info["local_path"]
 
     # 3. 上传本地文件到腾讯媒体服务器，获取公网URL
-    access_token = await get_access_token()
+    access_token = await get_access_token(config)
     media_url = "https://api.sgroup.qq.com/v2/media/upload"
     async with aiohttp.ClientSession() as session:
         with open(local_path, "rb") as f:
@@ -115,7 +123,7 @@ async def upload_file_by_index(message: GroupMessage, file_index: int, srv_send_
 # async def on_group_at_message_create(self, message: GroupMessage):
 #     try:
 #         # 示例1：调用索引0的文件（不主动发消息，仅获取file_info）
-#         upload_res = await upload_file_by_index(message, file_index=0, srv_send_msg=False)
+#         upload_res = await upload_file_by_index(message, file_index=0, config=self.bot_config, srv_send_msg=False)
 #
 #         # 生成动态消息序号（避免重复）
 #         msg_seq = int(time.time() * 1000) % 100000
@@ -128,7 +136,7 @@ async def upload_file_by_index(message: GroupMessage, file_index: int, srv_send_
 #         )
 #
 #         # 示例2：调用索引1的文件（直接发送到群聊，占用主动频次）
-#         # upload_res = await upload_file_by_index(message, file_index=1, srv_send_msg=True)
+#         # upload_res = await upload_file_by_index(message, file_index=1, config=self.bot_config, srv_send_msg=True)
 #
 #     except Exception as e:
 #         await message.reply(content=f"上传失败：{str(e)[:50]}", msg_type=0)

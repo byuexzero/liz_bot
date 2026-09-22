@@ -4,11 +4,10 @@ import os
 
 import botpy
 from botpy import logging
-from botpy.ext.cog_yaml import read
 from botpy.ext.command_util import Commands
 from botpy.message import GroupMessage, Message
 
-test_config = read(os.path.join(os.path.dirname(__file__), "./config/config.yaml"))
+from liz_bot.config import load_bot_config
 
 _log = logging.get_logger()
 
@@ -60,6 +59,7 @@ if __name__ == "__main__":
     # intents.public_messages=True
 
     # 通过kwargs，设置需要监听的事件通道
+    config = load_bot_config()
     intents = botpy.Intents(public_messages=True)
     client = MyClient(intents=intents)
-    client.run(appid=test_config["appid"], secret=test_config["secret"])
+    client.run(appid=config.appid, secret=config.secret)
