@@ -289,6 +289,68 @@ check(
 
 print()
 print("=" * 72)
+print("G. botpy 集成 —— run_bot 传参与 on_ready 状态联动")
+print("=" * 72)
+
+# 这一节补的是一个真实缺口：前面 F 节把 run_bot 整个打桩了，healthz 也只
+# 单独测过。于是"run_bot 有没有把注入的凭据真的交给 botpy"和
+# "on_ready 有没有把健康检查状态置为 ready"这两件事从未被验证过 ——
+# 而它们正是本次重构与健康检查接入的关键接线点。
+# 手法：把 botpy.Client.run 换成记录器，就不必真的连腾讯服务器。
+BOT_INTEGRATION_PROBE = """
+import asyncio, json, os, sys, types
+sys.path.insert(0, os.getcwd())
+import botpy
+import botpy.robot
+from liz_bot import healthz, qqgroupbot
+from liz_bot.config import BotConfig
+
+out = {}
+
+calls = []
+def fake_run(self, *args, **kwargs):
+    calls.append({"args": [str(a) for a in args],
+                  "kwargs": {k: str(v) for k, v in kwargs.items()}})
+botpy.Client.run = fake_run
+qqgroupbot.run_bot(BotConfig(appid="APPID_X", secret="SECRET_Y"))
+out["run_calls"] = calls
+
+client = qqgroupbot.MyClient(intents=botpy.Intents(public_messages=True))
+# Client.robot 是只读 property，真实数据来自 self._connection.state.robot
+# （见 botpy/client.py: `return self._connection.state.robot`）。
+# 所以这里不能直接赋值 .robot，只能注入 _connection；且刻意用 botpy 真实的
+# Robot 类而不是 SimpleNamespace —— 这样连"on_ready 读取的字段名是否与
+# botpy 一致"也一并验证了。
+client._connection = types.SimpleNamespace(
+    state=types.SimpleNamespace(
+        robot=botpy.robot.Robot({"id": "12345", "username": "stub-bot"})
+    )
+)
+out["robot_name_via_property"] = client.robot.name
+out["before"] = healthz._state["bot"]
+asyncio.run(client.on_ready())
+out["after"] = healthz._state["bot"]
+
+print(json.dumps(out))
+"""
+
+gi = run_probe(BOT_INTEGRATION_PROBE, {"HEALTHZ_PORT": "18742"})
+calls = gi.get("run_calls") or []
+check(len(calls) == 1, "run_bot 恰好调用 botpy.Client.run 一次", str(calls))
+if calls:
+    kw = calls[0].get("kwargs", {})
+    check(kw.get("appid") == "APPID_X", "appid 被原样传给 botpy", str(kw))
+    check(kw.get("secret") == "SECRET_Y", "secret 被原样传给 botpy", str(kw))
+check(gi.get("before") == "starting", "on_ready 之前状态为 starting", str(gi.get("before")))
+check(gi.get("after") == "ready", "on_ready 之后状态变为 ready", str(gi.get("after")))
+check(
+    gi.get("robot_name_via_property") == "stub-bot",
+    "client.robot 经 _connection 读取到真实 botpy Robot",
+    str(gi.get("robot_name_via_property")),
+)
+
+print()
+print("=" * 72)
 print("E. 语法编译")
 print("=" * 72)
 
