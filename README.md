@@ -192,7 +192,7 @@ projectsega/
 | `liz_bot/emoji*/` | 体积大 / 冗余素材 |
 | `legacy_sdgb_stack/` | 旧实现存档（约 200MB），且内含明文凭据 |
 | `legacy_qqbot_stack/` | 旧 QQ 技术栈（go_cqhttp + unidbg-fetch-qsign） |
-| `_tools/` | 开发期工具（类型转换器、验证脚本）。**例外**：`verify_deploy_paths.py` 是部署自检脚本，随仓库分发 |
+| `_tools/` | 开发期工具（类型转换器、验证脚本）。**例外**：三个部署自检脚本随仓库分发（`verify_deploy_paths.py` / `simulate_container.py` / `check_wheels.py`） |
 | `_backup/` | 备份 |
 | `bot_log/` | 运行日志 |
 

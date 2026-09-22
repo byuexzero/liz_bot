@@ -32,9 +32,15 @@ WORKDIR /app
 
 # 先只拷 requirements：依赖没变时这一层能命中缓存，改代码不必重装依赖。
 #
-# build-essential 是为少数没有 manylinux wheel 的包准备的编译环境，
-# tzdata 让上面的 TZ 生效（slim 镜像不自带）。两者都在同一层内装完即卸，
-# 不会留在最终镜像里；若构建日志显示全部装的是 wheel，可以去掉 build-essential。
+# build-essential 是编译环境的保险，tzdata 让上面的 TZ 生效（slim 镜像不自带）。
+# 两者都在同一层内装完即卸，不会留在最终镜像里。
+#
+# build-essential 到底需不需要？已用 _tools/check_wheels.py 核对过：
+# 13 个顶层依赖在 linux/amd64 上**全部有预编译 wheel**
+# （纯 Python / cp310-cp310 / cp37-abi3 稳定 ABI），理论上不会触发源码编译。
+# 但仍然刻意保留 —— 传递依赖没有逐一核实，且个别包可能因 glibc 版本
+# 回退到源码，那时候没有编译器构建就会失败，而报错信息很难指向真正原因。
+# 想缩短构建时间：确认构建日志里全是 "Downloading ...whl" 之后即可删掉它。
 COPY requirements.txt ./
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential tzdata \

@@ -251,6 +251,34 @@ curl http://127.0.0.1:8080/
 
 ---
 
+## 11. 部署前自检（强烈建议先跑）
+
+三个脚本都在 `_tools/`，只依赖标准库，可在任何 Python 3.10+ 上跑。
+它们验证的是**部署配置**而非业务逻辑 —— 因为这类错误的表现都是**静默失败**，
+在生产环境里极难排查。
+
+```bash
+# 1. 持久化卷与 LIZ_DATA_DIR 是否配对 —— 最该跑的一个
+python _tools/verify_deploy_paths.py
+
+# 2. 模拟容器构建：.dockerignore 有没有误伤运行必需文件
+#    不需要 Docker：用 git 内容 + .dockerignore 规则复现镜像内容，
+#    再在模拟镜像里真跑一遍入口、卷播种与查歌链路
+python _tools/simulate_container.py
+
+# 3. 依赖在 linux/amd64 上是否需要源码编译（决定 Dockerfile 要不要 build-essential）
+python _tools/check_wheels.py
+```
+
+**第 1 个最重要。** `LIZ_DATA_DIR` 与卷挂载点不一致时，程序会继续写容器内的
+临时目录 —— 别名表每次重启都丢，而且**不报任何错**。这正是第 4 节反复强调
+两者必须一致的原因。
+
+> 注意用 **Python 3.10** 跑（`ijson` 只装在那上面）。脚本会自动探测解释器，
+> 但如果你手动指定了别的版本，可能误报 `ModuleNotFoundError`。
+
+---
+
 ## 附：为什么不选其他方案
 
 | 方案 | 结论 |
