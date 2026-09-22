@@ -1,0 +1,56 @@
+# =============================================================================
+# Docker 构建上下文排除清单
+#
+# 作用与 .gitignore 不同：.gitignore 管"哪些不进 Git 仓库"，
+# 这里管"哪些不进 docker build 的上下文"。仓库里没有的文件（例如被 .gitignore
+# 排除的 emoji/）在本地构建时仍然存在，会白白传给构建器，所以两边都要写。
+# =============================================================================
+
+# ---------- 版本控制与本地环境 ----------
+.git
+.gitignore
+.gitattributes
+.venv
+venv
+env
+
+# ---------- 运行产物 ----------
+__pycache__
+*.py[cod]
+*$py.class
+bot_log
+liz_bot/ai_chat
+*.db
+
+# ---------- 敏感配置（绝不能进镜像层） ----------
+# 本地构建时若存在真实 config.yaml，必须排除：镜像层是可被拉取的，
+# 写进去等于把 appid/secret 一起发布了。
+.env
+liz_bot/config/*.yaml
+!liz_bot/config/*.example.yaml
+
+# ---------- 体积大且与运行无关的归档 ----------
+# legacy_sdgb_stack/ 约 200MB，且含真实二维码与 AES 密钥
+legacy_sdgb_stack
+legacy_qqbot_stack
+_backup
+_tools
+
+# ---------- 大体积素材 ----------
+# emoji_gif/ 约 34MB，当前代码没有任何引用（保留 emoji/ 那 1MB，
+# 它是 pic_haddler 实际读取的目录）
+liz_bot/emoji_gif
+
+# ---------- 曲库数据集中不参与运行的部分 ----------
+# compress/ 是上游预先压缩的副本，本项目只读原始 JSON（ijson 流式解析）
+liz_bot/maimaiDX_songs/compress
+liz_bot/maimaiDX_songs/.github
+
+# ---------- 开发与调试杂项 ----------
+.idea
+.vscode
+*.swp
+*.swo
+*.saz
+*.reg
+三套SDGB实现对比.md

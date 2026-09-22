@@ -12,12 +12,15 @@ from botpy.ext.command_util import Commands
 from botpy.message import GroupMessage, Message
 from liz_bot.command_handler import handle_command, parse_command
 from liz_bot.config import BotConfig, load_bot_config
+from liz_bot.healthz import set_status as set_health_status
+from liz_bot.runtime_paths import LOG_DIR
 
 _log = logging.get_logger()
 
-# 日志文件统一存放目录（项目根目录下的 bot_log/）
-# botpy 默认把日志写到 os.getcwd()，此处显式指定为 bot_log 文件夹
-LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bot_log")
+# 日志文件统一存放目录。
+# botpy 默认把日志写到 os.getcwd()，此处显式指定，避免"从哪个目录启动"影响落盘位置。
+# 路径由 runtime_paths 解析：设置了 LIZ_DATA_DIR（容器平台挂载持久化卷）时日志
+# 落在卷上，否则沿用项目根目录下的 bot_log/。
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # 追加文件 handler：格式与 botpy 默认完全一致，仅改变存放路径
@@ -72,6 +75,8 @@ class MyClient(botpy.Client):
 
     async def on_ready(self):
         _log.info(f"机器人 {self.robot.name} 已就绪！")
+        # 让健康检查端点反映真实就绪状态（见 liz_bot/healthz.py）
+        set_health_status("ready")
 
     async def on_group_at_message_create(self, message: GroupMessage):
         """监听群聊@消息，解析并处理指令"""

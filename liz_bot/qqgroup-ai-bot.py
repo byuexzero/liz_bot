@@ -21,11 +21,12 @@ from botpy import logging
 from botpy.message import GroupMessage, Message
 
 from liz_bot.config import AIConfig, BotConfig, load_ai_config, load_bot_config
+from liz_bot.runtime_paths import AI_CHAT_DIR
 
 _log = logging.get_logger()
 
-# 会话记录目录（相对本文件，避免依赖 cwd）
-AI_CHAT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_chat")
+# 会话记录目录。由 runtime_paths 解析：设置 LIZ_DATA_DIR 时落在持久化卷上，
+# 否则沿用 liz_bot/ai_chat/（路径用 __file__ 推导，不依赖 cwd）。
 
 SYSTEM_PROMPT = (
     "你所扮演的猫娘的信息：“名字：neko，身高：160cm，体重：50kg，三"

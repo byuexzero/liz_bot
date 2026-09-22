@@ -92,7 +92,22 @@ YAML 路径必须由调用方**显式传入**（见 `run.py`），不会自动�
 
 仓库中不含 `liz_bot/config/*.yaml`，云端 YAML 回退会自动跳过。缺少必填
 环境变量时程序会打印一行清晰错误并退出（非 traceback），便于在平台日志里
-定位。注意本机器人需要**常驻长连接**，请选择不会因空闲而休眠的运行环境。
+定位。
+
+注意本机器人需要**常驻长连接**，请选择不会因空闲而休眠的运行环境。
+容器平台上还有两个变量建议设置：
+
+| 环境变量 | 作用 | 不设的后果 |
+|---|---|---|
+| `LIZ_DATA_DIR` | 指向挂载的持久化卷（如 `/data`） | 容器重启后用户新增的别名**静默丢失** |
+| `HEALTHZ_PORT` | 让容器监听一个端口供平台探活 | 可能被判为不健康而反复重启，表现为莫名掉线 |
+
+两者都**不设置时行为与从前完全一致**，本地开发不受影响。设计动机分别见
+`liz_bot/runtime_paths.py` 与 `liz_bot/healthz.py` 的模块文档。
+
+> 📦 **完整部署步骤见 [`DEPLOY_CLAWCLOUD.md`](DEPLOY_CLAWCLOUD.md)**
+> （ClawCloud Run：免绑卡、免费实例不休眠、支持持久化卷）。
+> 仓库根目录的 `Dockerfile` 可直接用于任何容器平台。
 
 ---
 
@@ -104,6 +119,15 @@ python run.py
 
 Windows 下可直接双击 `start.bat`。
 
+用容器跑（本地复现线上形态）：
+
+```bash
+docker build -t liz-bot .
+docker run --rm -v liz-data:/data -e LIZ_DATA_DIR=/data \
+  -e HEALTHZ_PORT=8080 -p 8080:8080 \
+  -e QQ_BOT_APPID=你的AppID -e QQ_BOT_SECRET=你的AppSecret liz-bot
+```
+
 ---
 
 ## 目录结构
@@ -112,16 +136,22 @@ Windows 下可直接双击 `start.bat`。
 projectsega/
 ├── run.py                  启动入口
 ├── requirements.txt
+├── Dockerfile              容器镜像（任意容器平台可用）
+├── .dockerignore
+├── DEPLOY_CLAWCLOUD.md     部署说明（ClawCloud Run）
 ├── .env.example            API 凭据模板
 ├── 三套SDGB实现对比.md       sdgb / eaquira / Lionheart 三套旧实现的差异分析
 ├── liz_bot/                QQ 群机器人
 │   ├── config.py           配置加载（环境变量优先，手动注入）
+│   ├── runtime_paths.py    运行时数据目录（持久化卷支持）
+│   ├── healthz.py          健康检查端口（容器平台探活）
 │   ├── qqgroupbot.py       主入口（botpy）
 │   ├── command_router.py   指令分发
 │   ├── command_handler.py  对外 facade
 │   ├── daily_funcs.py      日常指令实现
 │   ├── song_query.py       曲库检索
 │   ├── song_alias.py       曲目别名
+│   ├── song_paths.py       曲库路径
 │   ├── pic_haddler.py      表情包上传
 │   ├── config/             配置模板与本地 YAML 回退
 │   └── maimaiDX_songs/     歌曲数据库（随仓库分发）
@@ -147,8 +177,8 @@ projectsega/
 
 | 目录 | 体积 | 影响 | 恢复方式 |
 |---|---|---|---|
-| `liz_bot/emoji_gif/` | ~34MB | 当前**代码中无任何引用**，属冗余素材 | 可不放；若日后启用，文件名需与代码引用一致 |
-| `liz_bot/emoji/` | ~1MB | 缺少则静态表情上传指令不可用 | 放入 PNG / JPG 文件即可，`pic_haddler.py` 启动时自动扫描该目录 |
+| `liz_bot/emoji_gif/` | ~34MB | 当前**代码中无任何引用**，属冗余素材 | 可不放 |
+| `liz_bot/emoji/` | ~1MB | **当前无影响** —— `pic_haddler.py` 没有任何调用方，模块根本不会被导入 | 放入 PNG / JPG 即可；日后接线后，模块导入时自动扫描该目录 |
 
 代码本身不依赖这些素材，缺失时只是对应指令不可用。
 
@@ -162,7 +192,7 @@ projectsega/
 | `liz_bot/emoji*/` | 体积大 / 冗余素材 |
 | `legacy_sdgb_stack/` | 旧实现存档（约 200MB），且内含明文凭据 |
 | `legacy_qqbot_stack/` | 旧 QQ 技术栈（go_cqhttp + unidbg-fetch-qsign） |
-| `_tools/` | 开发期工具（类型转换器、验证脚本） |
+| `_tools/` | 开发期工具（类型转换器、验证脚本）。**例外**：`verify_deploy_paths.py` 是部署自检脚本，随仓库分发 |
 | `_backup/` | 备份 |
 | `bot_log/` | 运行日志 |
 
