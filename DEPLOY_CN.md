@@ -465,8 +465,30 @@ cat >> deploy/.env <<'EOF'
 APT_MIRROR=mirrors.cloud.tencent.com
 PIP_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
 EOF
+
+# 先确认这两个值真的传进构建了 —— 这一步不花时间，不用等构建
+docker compose -f deploy/docker-compose.yml config | grep -A3 'args:'
+
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
+
+`config` 那步应该打印出解析后的值：
+
+```
+    args:
+      APT_MIRROR: mirrors.cloud.tencent.com
+      PIP_INDEX: https://mirrors.cloud.tencent.com/pypi/simple
+```
+
+**如果打印出来是空的，先别构建** —— 说明 `.env` 没被读到，构建会照旧走
+官方源、白等一次。这里有个容易踩的细节：Compose 做变量替换时读的是
+**项目目录**下的 `.env`，而项目目录 = `-f` 指定的 compose 文件所在目录，
+**不是你的当前目录**。所以 `-f deploy/docker-compose.yml` 读的是
+`deploy/.env`，不会误读仓库根目录那个给 maimai 工具链用的 `.env`。
+（想显式指定可以用 `--env-file deploy/.env`。）
+
+> 顺带一提：**shell 环境变量优先于 `.env`**。如果你之前 `export` 过
+> `APT_MIRROR`，它会盖掉 `.env` 里的值 —— `config` 那步同样能看出来。
 
 > 已核对 `mirrors.cloud.tencent.com` 是**完整的 Debian 镜像**：
 > `/debian`（bookworm、trixie）与 `/debian-security`

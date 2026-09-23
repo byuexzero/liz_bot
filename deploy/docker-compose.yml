@@ -12,8 +12,12 @@
 #     docker compose -f deploy/docker-compose.yml up -d --build
 #     docker compose -f deploy/docker-compose.yml logs -f
 #
-# 首次构建若卡在 apt-get update：见 DEPLOY_CN.md §3.6 的「镜像加速」小节，
-# 加一个 --build-arg APT_MIRROR=mirrors.cloud.tencent.com 即可。
+# 首次构建很慢（apt 200MB + pip 40MB，国内直连可能几十分钟）：
+# 在 deploy/.env 里加下面两行再构建，见 DEPLOY_CN.md §3.6.3。
+#     APT_MIRROR=mirrors.cloud.tencent.com
+#     PIP_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
+# 构建前可用 `docker compose -f deploy/docker-compose.yml config | grep -A3 args:`
+# 确认这两个值真的传进去了（不花时间，能省掉一次白等的构建）。
 # =============================================================================
 
 services:
