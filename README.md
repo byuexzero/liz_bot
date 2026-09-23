@@ -120,7 +120,9 @@ YAML 路径必须由调用方**显式传入**（见 `run.py`），不会自动�
 >
 > 📦 **国内平台部署：[`DEPLOY_CN.md`](DEPLOY_CN.md)**
 > —— 推荐腾讯云轻量（首年 ¥38，且**无需备案**）、阿里云 ECS（¥99/年 续费同价），
-> 含 systemd 开机自启配置。
+> 含 systemd 开机自启与 Docker Compose 两套配置。
+> 服务器规格已实测推算过：**入门型（2核2G / 4M / 50G）余量在 20 倍以上**
+> —— 峰值内存 47.5 MB、镜像约 165 MB、日志 60 KB/天量级。
 >
 > 📦 **容器平台通用说明见 [`DEPLOY_PAAS.md`](DEPLOY_PAAS.md)**
 > —— 挂载持久化卷、环境变量、探活端口、部署前自检。
@@ -169,8 +171,10 @@ projectsega/
 ├── DEPLOY_LOCAL.md         本地部署验证（上线前彩排）
 ├── DEPLOY_CN.md            国内平台部署（轻量服务器 / ECS / Sealos）
 ├── DEPLOY_PAAS.md          容器平台通用部署说明（卷 / 环境变量 / 自检）
-├── deploy/
-│   └── liz-bot.service     systemd 单元（VPS 开机自启）
+├── deploy/                 VPS 部署产物（容器里用不到，已被 .dockerignore 排除）
+│   ├── liz-bot.service     systemd 单元（venv 方式开机自启）
+│   ├── docker-compose.yml  Docker 方式（内存/日志上限、卷、探活）
+│   └── .env.example        容器版凭据模板（.env 本身不入库）
 ├── .env.example            API 凭据模板
 ├── 三套SDGB实现对比.md       sdgb / eaquira / Lionheart 三套旧实现的差异分析
 ├── liz_bot/                QQ 群机器人

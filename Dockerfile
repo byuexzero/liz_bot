@@ -42,7 +42,29 @@ WORKDIR /app
 # 回退到源码，那时候没有编译器构建就会失败，而报错信息很难指向真正原因。
 # 想缩短构建时间：确认构建日志里全是 "Downloading ...whl" 之后即可删掉它。
 COPY requirements.txt ./
-RUN apt-get update \
+
+# 构建期的 apt 源主机名。留空 = 沿用基础镜像自带的 Debian 官方源
+# （deb.debian.org），行为与加这个参数之前完全一致。
+#
+# 为什么留个口子：build-essential 要从 apt 拉约 200MB 的 deb 包，
+# 在国内直连 deb.debian.org 可能慢到几十分钟。在腾讯云轻量服务器上构建时：
+#
+#     docker build --build-arg APT_MIRROR=mirrors.cloud.tencent.com -t liz-bot .
+#
+# 已核对 mirrors.cloud.tencent.com 同时提供 /debian 与 /debian-security
+# 两个路径，且 `deb.debian.org` 这个主机名在 bookworm 的两条源里都出现，
+# 一次替换即可覆盖。腾讯云实例上更快的 `mirrors.tencentyun.com` 是内网版，
+# 是否可用取决于实例所在网络。
+#
+# 只重写主机名、不换发行版/组件，所以镜像内容与默认构建一致 ——
+# 这个参数影响的是下载速度，不是构建结果。
+ARG APT_MIRROR=""
+RUN if [ -n "$APT_MIRROR" ]; then \
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+        if [ -f "$f" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g" "$f"; fi; \
+      done; \
+    fi; \
+    apt-get update \
  && apt-get install -y --no-install-recommends build-essential tzdata \
  && pip install --no-cache-dir -r requirements.txt \
  && apt-get purge -y --auto-remove build-essential \

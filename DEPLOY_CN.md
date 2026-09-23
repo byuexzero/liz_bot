@@ -26,6 +26,89 @@
 **推荐路径**：先用腾讯云轻量的 **0 元免费试用（2核2G / 1 个月）** 跑通，
 满意后再上 **38 元秒杀（4核4G / 1 年）**。等于第一个月免费，之后 ¥38/年。
 
+### 0.1 入门型够不够？—— 实测推算
+
+**结论：够，而且余量在 20 倍以上。入门型（2核2G / 4M / 50G SSD / 300G 流量）
+不是"勉强能跑"，是"根本用不满"。**
+
+原因很简单：这个机器人的资源画像**不是"一台服务器"，是"一个常驻的聊天客户端"**。
+它没有数据库、没有 HTTP 服务、没有定时批处理，99% 的时间在等 WebSocket 消息。
+
+| 资源 | 入门型提供 | 实测需求 | 余量 |
+|---|---|---|---|
+| CPU | 2 核 | 单线程 asyncio；查一次歌 **0.03 s**，其余时间全在等网络 | 100× 以上 |
+| 内存 | 2 GB | 峰值 **47.5 MB** | ≈ 40× |
+| 系统盘 | 50 GB SSD | 镜像 ≈ 165 MB + 日志 ≈ 0.5 MB | 300× 以上 |
+| 月流量 | 300 GB（**只算出流量**） | 文本消息每月几 MB | 1000× 以上 |
+| 带宽 | 4 Mbps | 只有首次构建镜像时会跑满 | 见下 |
+
+> 上面按**入门型里最常见的那档**（2核2G / 4M / 50G SSD / 300G 流量 / ¥99/年）算。
+> 入门型的带宽区间是 2–12 Mbps，买更低档也一样够用 —— 带宽只影响
+> 首次构建镜像要多久，不影响日常收发消息。
+> 各档配置见 §3.2 的表格。
+
+**内存实测明细**（`_tools/measure_memory.py all`，Windows RSS，Linux 相当）：
+
+| 阶段 | 当前 RSS |
+|---|---|
+| 解释器基线 | 19.0 MB |
+| `+ import botpy` | 37.1 MB |
+| `+ import aiohttp` | 37.1 MB |
+| `+ import liz_bot.qqgroupbot`（`run.py` 的实际路径） | 38.0 MB |
+| `+ 首次查歌`（加载 1394 首曲库并建索引） | 47.2 MB |
+| **峰值** | **47.5 MB** |
+
+反复查歌不再增长（连查 16 次后仍是 47.2 MB）—— 曲库是启动时一次性读入的，
+没有按查询累积的状态。
+
+**镜像体积明细**：
+
+| 组成 | 大小 | 来源 |
+|---|---|---|
+| `python:3.10-slim` 基础镜像 | 45.0 MB（压缩）／≈ 120 MB（解压） | docker-library/repo-info，2026-09-19 |
+| 依赖包 | 40.2 MB | site-packages 实测（Linux wheel 相当） |
+| 应用代码与只读数据 | 2.8 MB | `docker build` 上下文实测 |
+| **镜像合计** | **≈ 165 MB** | 加上构建缓存峰值也就 1 GB 出头 |
+
+**日志**：botpy 的 `TimedRotatingFileHandler` 按天轮转、`backupCount: 7`
+（`when: "D"`），所以磁盘占用**天然封顶**，不会随运行时长增长。
+日志行实测约 100 字节/行；按个人机器人的量级（每天几百条消息）估算
+约 **60 KB/天** —— 7 天稳态不到 0.5 MB，一年也就 20 MB 出头。
+（这一项是估算不是实测：本机没有连续跑满一天的日志样本。）
+
+#### 唯一值得想一想的：4 Mbps 带宽
+
+**先说一个容易搞错的前提：腾讯云轻量的流量包只统计"出流量"。**
+官方文档原文：
+
+> 轻量应用服务器的套餐采用流量包模式，**流量包仅统计实例的出流量**。
+>
+> —— <https://cloud.tencent.com/document/product/1207/44368>
+
+所以 `docker pull`、`apt-get`、`pip install` 这些**都不计流量**，
+只受 4 Mbps 速率限制。会跑满带宽的只有两件事：
+
+1. **首次构建镜像**：基础镜像 45 MB + apt ≈ 200 MB + pip ≈ 40 MB ≈ **300 MB 入站**，
+   4 Mbps 下理论下限约 10 分钟。实际会更久 —— 因为瓶颈通常不是带宽而是
+   `deb.debian.org` 的国内访问速度。解法见 [§3.6.3](#363-首次构建慢怎么办)。
+2. **机器人往外发图片**（曲绘 / b50 图 / emoji）：单张几百 KB，4 Mbps 下不到 1 秒。
+
+日常运行只有 WebSocket 心跳和文本消息，**每月几 MB 量级**。
+300 GB/月是什么概念：按每张 300 KB 算，等于 100 万张图片 —— 用不到。
+
+> 超额流量按 GB 另外计费，但以本项目的用量，这个风险等于零。
+
+#### 什么情况下才需要换更大的套餐
+
+| 情况 | 判断 |
+|---|---|
+| 就在这台机器上跑这一个机器人 | **入门型足够**，2G 里机器人只占 2.3% |
+| 同一台机器还要跑别的服务（另一个机器人、数据库、面板） | 内存仍有余（1.7 GB 可用），但注意 2G 是**整机**额度 |
+| 要用机器人做大批量图片/文件分发 | 换**锐驰型**（200 Mbps + 无限流量），瓶颈只在带宽 |
+
+CPU 的余量大到不需要讨论 —— 就算入门型是共享型 CPU，
+本项目的占用率也在 1% 以下，任何 CPU 规格都感知不到差异。
+
 ### 补充：别把"免费额度"当长期方案
 
 一个真实案例。本文档最初推荐的 **ClawCloud Run**（凭 GitHub 账号满 180 天
@@ -133,6 +216,11 @@
 
 **推荐路径**：免费试用（0 元）→ 验证 → 秒杀 4核4G（¥38/年）。
 
+> 如果你已经决定买**入门型（2核2G / 4M / 50G SSD / ¥99/年）**：**够用，不用纠结。**
+> 实测这个机器人峰值内存 47.5 MB、镜像约 165 MB、日志 60 KB/天量级，
+> 对入门型来说余量在 20 倍以上（完整推算见 §0.1）。
+> 4核4G 那档的意义不在于"跑得动"，而在于将来往这台机器上叠别的东西时不用再换。
+
 ### 3.3 部署步骤
 
 买完拿到公网 IP 后，SSH 上去：
@@ -216,6 +304,246 @@ git pull
 sudo systemctl restart liz-bot
 ```
 
+### 3.6 用 Docker 跑（可选，与 3.3 / 3.4 二选一）
+
+**3.3–3.5 和 3.6 是同一台机器上的两条路，选一条走就行。**
+两个都跑会触发「同一个机器人两处同时上线」，QQ 侧会互相踢下线。
+
+| | venv + systemd（3.3–3.5） | Docker（3.6） |
+|---|---|---|
+| 常驻开销 | 无额外进程 | Docker 守护进程约占 100 MB 内存 |
+| 环境一致性 | 依赖宿主机 Python 版本 | 镜像内自带 Python 3.10，与宿主机无关 |
+| 升级 | `git pull` + `pip install` | `git pull` + 重新构建镜像 |
+| 换平台 | 要重装环境 | 镜像直接搬走 |
+| 排查 | `journalctl -u liz-bot` | `docker compose logs` |
+
+按 §0.1 的实测，2 GB 内存完全放得下 Docker 守护进程，**两条路都跑得动**。
+想要"环境绝对可复现"就选 Docker。
+
+#### 3.6.1 登服务器、装 Docker、配镜像加速
+
+**① SSH 上去。** 控制台「概要」页有公网 IP；用户名取决于镜像类型
+（系统镜像 Ubuntu / Debian 通常是 `root`，应用镜像通常是 `lighthouse`）：
+
+```bash
+ssh root@你的公网IP
+```
+
+**② 装 Docker。** 用官方脚本 + 国内镜像源，一步装齐 `docker-ce` +
+`containerd` + **`docker compose`（v2 插件）**：
+
+```bash
+curl -fsSL https://get.docker.com | sh -s docker --mirror Aliyun
+sudo systemctl enable --now docker
+
+docker version          # 有 Client 和 Server 两段才算装好
+docker compose version  # 要能看到 v2.x，说明 compose 插件也在
+```
+
+> `--mirror Aliyun` 让安装源指向 `mirrors.aliyun.com/docker-ce`；
+> 不加的话走 `download.docker.com`，国内会很慢甚至超时。
+> 这个脚本**会**一并装上 `docker-compose-plugin`，所以后面能直接用
+> `docker compose`（带空格的新版命令，不是老的 `docker-compose`）。
+>
+> 若报 `Unsupported distribution`（镜像是 OpenCloudOS / TencentOS 等小众发行版时）：
+> 改用发行版自带的包 —— `apt install -y docker.io docker-compose-v2`
+> 或 `dnf install -y docker docker-compose-plugin`。
+> 实在装不上 compose 插件也不要紧，跳到
+> [§3.6.7](#367-不用-compose-的等价写法) 用 `docker run` 跑，效果一样。
+
+**③ 配镜像加速（必做）。** 不配的话 `docker pull python:3.10-slim`
+在国内大概率超时或慢到不可用：
+
+```bash
+sudo tee /etc/docker/daemon.json >/dev/null <<'EOF'
+{
+    "registry-mirrors": ["https://mirror.ccs.tencentyun.com"]
+}
+EOF
+sudo systemctl restart docker
+docker info | grep -A2 "Registry Mirrors"   # 确认生效
+```
+
+> ⚠️ `mirror.ccs.tencentyun.com` **只支持腾讯云内网访问**，不支持外网域名访问
+> —— 这是官方文档明确写的。也就是说它在 Lighthouse 上可用，
+> 在你自己的电脑上不可用。别把它配到本机。
+
+#### 3.6.2 拉代码、起容器
+
+```bash
+# 1. 拉代码（仓库很小：67 个文件、约 1.8 MB，4 Mbps 下一分钟以内）
+sudo mkdir -p /opt && cd /opt
+sudo git clone https://github.com/byuexzero/liz_bot.git
+sudo chown -R "$USER":"$USER" /opt/liz_bot
+cd /opt/liz_bot
+
+# 2. 准备凭据（模板见 deploy/.env.example）
+cp deploy/.env.example deploy/.env
+vim deploy/.env                 # 填 QQ_BOT_APPID / QQ_BOT_SECRET
+chmod 600 deploy/.env           # 同机其他用户不该读得到 AppSecret
+
+# 3. 构建并启动
+docker compose -f deploy/docker-compose.yml up -d --build
+
+# 4. 看状态与日志
+docker compose -f deploy/docker-compose.yml ps
+docker compose -f deploy/docker-compose.yml logs -f
+```
+
+看到 `机器人 xxx 已就绪！` 就成了，群里发个 `/id 8` 试试。
+
+> 若报 `docker: 'compose' is not a docker command`（只有老的独立二进制），
+> 把 `docker compose` 换成 `docker-compose`，其余参数不变。
+
+`deploy/.env` 已被 `.gitignore` 的 `.env` 规则排除，不会入库。
+（仓库根目录那个 `.env` 是给 maimai/SDGB 工具链用的，两者互不相干。）
+
+#### 3.6.3 首次构建慢怎么办
+
+`Dockerfile` 里的 `apt-get install build-essential` 要从 Debian 官方源
+拉约 200 MB 的 deb 包，国内直连可能几十分钟。两个办法：
+
+```bash
+# 办法一（推荐）：构建时换用腾讯云 apt 镜像
+#   已核对 mirrors.cloud.tencent.com 同时提供 /debian 与 /debian-security，
+#   而 deb.debian.org 这个主机名在 bookworm 的两条源里都出现，一次替换即覆盖。
+docker compose -f deploy/docker-compose.yml build \
+  --build-arg APT_MIRROR=mirrors.cloud.tencent.com
+docker compose -f deploy/docker-compose.yml up -d
+```
+
+```dockerfile
+# 办法二：确认构建日志里全是 "Downloading ...whl"（没有编译）之后，
+# 把 build-essential 从 Dockerfile 的 apt-get install 里删掉。
+# Dockerfile 的注释里本来就说可以删 —— 13 个顶层依赖在 linux/amd64 上全有 wheel。
+```
+
+> 这两个办法都**只影响构建速度，不影响镜像内容** —— `APT_MIRROR`
+> 只重写源的主机名，不换发行版和组件；`build-essential` 是装完即卸的编译环境。
+
+如果换完 apt 源之后**还**慢，看构建日志卡在哪一段：
+
+- 卡在 `Downloading <包名>...whl` → 瓶颈在 PyPI（约 40 MB）。在 `Dockerfile`
+  的 `pip install` 那一行加上 `-i https://mirrors.cloud.tencent.com/pypi/simple`
+  即可（**没有**做成 build arg，因为 pip 慢的情况比 apt 少见得多，
+  多一个参数就多一处要维护的东西）。
+- 卡在 `Building wheel for ...` → 说明某个包在源码编译，这时**不能**删
+  `build-essential`，用办法一换 apt 源就够了。
+
+#### 3.6.4 compose 里几个关键设置
+
+| 设置 | 值 | 为什么是这个值 |
+|---|---|---|
+| `mem_limit` | `256m` | 实测峰值 47.5 MB 的 5 倍余量。不设限的话，将来一次内存泄漏会先吃光整台 2G 机器，**连 Docker 守护进程都会被 OOM 拖死**，症状是整机 SSH 卡住，比"容器自己被杀掉重启"难查得多 |
+| `logging` | json-file / `10m`×3 | Docker 的 json-file 日志驱动**默认不轮转**，会一直长到撑爆磁盘。botpy 在 import 时就给 root logger 挂了 StreamHandler，日志会进这里，所以这个上限不是可选项 |
+| `restart` | `unless-stopped` | 崩了自动拉起；但你手动 `stop` 之后它不会自己又爬起来（排查问题时很重要，`always` 会） |
+| `ports` | `127.0.0.1:8080:8080` | 只绑回环。机器人是纯出站 WebSocket 客户端，**不需要任何公网入站**，健康检查在容器内部自己 curl 自己 |
+| `volumes` | `./data:/data` | 日志与会话历史的落点。用 bind mount 而非 named volume：出问题可以直接 `sudo ls /opt/liz_bot/deploy/data`，不用先 `docker cp` |
+| `security_opt` | `no-new-privileges:true` | 容器内以 root 运行只是为了让卷可写（见 Dockerfile 注释），不需要再提权 |
+| `healthcheck` | 探响应体里的 `"bot": "ready"` | 见下 |
+
+**关于健康检查的两个坑：**
+
+1. **`docker ps` 显示 `unhealthy` 时，容器不会被自动重启。**
+   Docker 的 `restart` 策略**只看进程是否退出**，不看 healthy / unhealthy。
+   想在 unhealthy 时自动重启，得再挂一个 autoheal 容器 —— 本项目用不上，
+   botpy 自带断线重连，进程活着就说明连接在维护中。健康检查的价值是
+   **给你一个一眼可见的状态指示**，不是自动运维。
+2. **探的是响应体不是状态码。** healthz 永远返回 200（启动阶段返回非 200
+   会被平台判为启动失败，反而制造问题），真正区分状态的是 body 里的
+   `"bot": "starting"` / `"ready"`（见 `liz_bot/healthz.py`）。
+   探针用 `python -c` 而不是 `curl` —— `python:3.10-slim` 里没有 curl。
+
+在机器上手工看一眼状态：
+
+```bash
+curl 127.0.0.1:8080
+# {"status": "ok", "bot": "ready", "uptime_seconds": 12345.6}
+```
+
+#### 3.6.5 更新
+
+```bash
+cd /opt/liz_bot
+git pull
+docker compose -f deploy/docker-compose.yml up -d --build
+docker image prune -f          # 清掉被替换下来的旧镜像层，否则磁盘会慢慢攒
+```
+
+#### 3.6.6 安全组：一个端口都不用开
+
+机器人是**纯出站的 WebSocket 客户端**，只主动连 `api.sgroup.qq.com`；
+健康检查端口绑在 `127.0.0.1` 上，只在本机可见。
+
+所以 Lighthouse 的防火墙 / 安全组**保持默认即可**（只留 SSH 的 22）。
+既不用开 8080，也不用做任何端口转发 —— 顺带也就没有"暴露到公网被人扫"的问题。
+
+#### 3.6.7 不用 compose 的等价写法
+
+装不上 `docker compose` 插件时（老发行版、或只想跑一条命令），
+用 `docker run` 也能达到完全一样的效果 —— 下面每条 `--flag` 都对应
+compose 里的一个设置：
+
+```bash
+cd /opt/liz_bot
+docker build -t liz-bot .
+
+docker run -d \
+  --name liz-bot \
+  --restart unless-stopped \
+  --env-file deploy/.env \
+  -e TZ=Asia/Shanghai \
+  -e LIZ_DATA_DIR=/data \
+  -e HEALTHZ_PORT=8080 \
+  -v "$PWD/deploy/data:/data" \
+  -p 127.0.0.1:8080:8080 \
+  --memory 256m \
+  --log-driver json-file --log-opt max-size=10m --log-opt max-file=3 \
+  --security-opt no-new-privileges:true \
+  --health-cmd "python -c \"import json,urllib.request as u,sys; d=json.load(u.urlopen('http://127.0.0.1:8080/',timeout=3)); sys.exit(0 if d.get('bot')=='ready' else 1)\"" \
+  --health-interval 60s --health-timeout 5s --health-retries 3 \
+  --health-start-period 30s \
+  liz-bot
+```
+
+| compose 里的写法 | 对应的 `docker run` 参数 |
+|---|---|
+| `restart: unless-stopped` | `--restart unless-stopped` |
+| `env_file: ./.env` | `--env-file deploy/.env` |
+| `volumes: ./data:/data` | `-v "$PWD/deploy/data:/data"` |
+| `ports: 127.0.0.1:8080:8080` | `-p 127.0.0.1:8080:8080` |
+| `mem_limit: 256m` | `--memory 256m` |
+| `logging: json-file / 10m ×3` | `--log-driver json-file --log-opt max-size=10m --log-opt max-file=3` |
+| `security_opt: no-new-privileges` | `--security-opt no-new-privileges:true` |
+| `healthcheck:` | `--health-cmd` + `--health-interval/timeout/retries/start-period` |
+
+常用操作：`docker logs -f liz-bot` / `docker restart liz-bot` /
+`docker stop liz-bot` / 更新见 [§3.6.5](#365-更新)（把 `up -d --build`
+换成 `docker build -t liz-bot . && docker restart liz-bot`）。
+
+#### 3.6.8 跑不起来时先看这里
+
+按出现频率排序，**先看 `docker compose logs` 再动手**：
+
+| 现象 | 原因 | 怎么办 |
+|---|---|---|
+| `docker pull` 卡住 / `i/o timeout` | 没配镜像加速，或配了但不在腾讯云内网 | 回 [§3.6.1](#361-登服务器装-docker配镜像加速) 第 ③ 步；`docker info` 里要能看到 `Registry Mirrors` |
+| 构建卡在 `Get:… deb.debian.org` | Debian 官方源在国内慢 | 加 `--build-arg APT_MIRROR=mirrors.cloud.tencent.com`，见 [§3.6.3](#363-首次构建慢怎么办) |
+| 日志里 `获取token失败，请检查appid和secret` | 凭据错 / 没读到 | 确认 `deploy/.env` 里两个值都填了、没留引号、没多余空格；`docker compose config` 能打出实际生效的环境变量 |
+| 容器起来又立刻退出，`docker ps -a` 显示 `Exited (1)` | 启动自检没过 | `docker compose logs --tail=50`。启动失败时**一定**有一行 `启动失败：<原因>`（配置缺失、回复文本缺失等），照那行改 |
+| `STATUS` 长期 `health: starting` | 连不上 QQ，`on_ready` 没触发 | 先看日志有没有 token 错误；再确认这台机器能出网（`curl -sI https://api.sgroup.qq.com`） |
+| 群里 @ 没反应，但容器 `healthy` | 机器人已在别处上线 | QQ 机器人**不能两处同时在线**，先停掉本地/其他平台的实例 |
+| 磁盘被占满 | 没设日志上限 / 没清旧镜像 | `docker system df` 看占用；`docker image prune -f`；确认 compose 里 `logging` 那段没被删 |
+
+> 手工看健康检查端点（在服务器上执行，不是在你本机）：
+>
+> ```bash
+> curl 127.0.0.1:8080
+> # {"status": "ok", "bot": "ready", "uptime_seconds": 12345.6}
+> ```
+>
+> `"bot"` 是 `starting` 就说明进程活着但还没连上 QQ。
+
 ---
 
 ## 4. 备选方案
@@ -295,13 +623,24 @@ export LIZ_DATA_DIR=/var/lib/liz_bot
 
 ## 6. 迁移清单
 
-从本地/容器迁到 VPS：
+从本地/容器迁到 VPS。**两条路选一条**（见 §3.6 开头的对比表）：
+
+**A. venv + systemd（§3.3–3.5）**
 
 - [ ] 设 `LIZ_DATA_DIR=/var/lib/liz_bot`（第 5 节，建议项）
 - [ ] 凭据放 `/etc/liz-bot.env`，权限 `600`（不要用 `Environment=`）
 - [ ] 确认机器人**只在一处运行**（QQ 机器人不能两处同时在线）
 - [ ] 如果之前跑过容器版，把卷里的 `ai_chat/`、`bot_log/` 拷过来（可选，仅为保留历史）
 - [ ] `systemctl enable` 确保开机自启
+- [ ] 群里发 `/id 8` 确认在线
+
+**B. Docker + compose（§3.6）**
+
+- [ ] 先配 Docker 镜像加速源（§3.6.1），否则拉不到 `python:3.10-slim`
+- [ ] `cp deploy/.env.example deploy/.env` 并 `chmod 600`，填 AppID / AppSecret
+- [ ] 确认机器人**只在一处运行**（同上）
+- [ ] `docker compose -f deploy/docker-compose.yml up -d --build`
+- [ ] `docker compose ... ps` 里 `STATUS` 显示 `healthy`
 - [ ] 群里发 `/id 8` 确认在线
 
 ---
@@ -312,7 +651,7 @@ export LIZ_DATA_DIR=/var/lib/liz_bot
 
 - 用 Sealos 这类容器平台 → 直接吃 `Dockerfile`
 - 用轻量服务器 → 可以不用 Docker（直接 venv + systemd，更轻量），
-  也可以 `docker run` 跑同一个镜像
+  也可以走 `deploy/docker-compose.yml`（见 §3.6）
 
 镜像里的 `LIZ_DATA_DIR=/data` 与 VPS 上的 `/var/lib/liz_bot` 只是路径不同，
 逻辑完全一致。**在本地用 `local_rehearsal.py` 验证过的结论，两边都适用。**

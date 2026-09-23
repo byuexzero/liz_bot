@@ -10,10 +10,16 @@
     2. 按 `.dockerignore` 规则删掉被排除的路径
     3. 断言该有的都在、不该有的都不在
     4. 在这个"模拟镜像"里真的跑一遍入口与查歌链路
+    5. 再核对 `deploy/docker-compose.yml` 与 Dockerfile / 卷 / 端口的一致性
 
 注意第 1 步用的是 git 内容而非工作区,所以被 `.gitignore` 排除的文件
 (如 `liz_bot/emoji/`、`liz_bot/config/config.yaml`)天然不在其中 ——
 这与云端构建的行为一致。
+
+第 5 步是唯一**不依赖 git** 的一节(直接读工作区):compose 文件是给人手动
+`docker compose up` 用的,它此刻能不能跑与它有没有被提交无关,而它出错的
+方式是静默的 —— 比如 `LIZ_DATA_DIR` 与卷挂载点写成两个路径,机器人照常
+启动、照常回消息,只是日志与会话历史落进了容器层,重启就没。
 
 .dockerignore 匹配语义
 ----------------------
@@ -48,12 +54,18 @@ import fnmatch
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
+
+try:
+    import yaml as _yaml
+except ImportError:  # pragma: no cover - 只在依赖缺失时走到
+    _yaml = None
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -387,6 +399,94 @@ print(json.dumps(asyncio.run(main()), ensure_ascii=False))
                   "含空格的别名可用(router 整串优先)", r["bm_multiword"])
             check("会员制餐厅" in r["cbm"],
                   "/cbm 能回显别名列表", r["cbm"])
+
+    # -------------------------------------- compose 与 Dockerfile / 卷 的一致性
+    #
+    # 本节**刻意不依赖 git**（直接读工作区），理由和上面那条「.dockerignore
+    # 未排除只读数据」一样：这些是"改错了也不会立刻报错"的地方 ——
+    # compose 里 LIZ_DATA_DIR 与卷挂载点写成两个路径，机器人照常启动、
+    # 照常回消息，只是日志与会话历史落进了容器层，重启就没。
+    #
+    # 另有一条是**安全**相关：compose 与 deploy/.env 必须被 .dockerignore
+    # 排除。镜像层是可被拉取的，AppSecret 写进去等于公开发布。
+    print()
+    print("=" * 72)
+    print("F. deploy/docker-compose.yml 与 Dockerfile / 卷 的一致性")
+    print("=" * 72)
+
+    compose_path = REPO / "deploy" / "docker-compose.yml"
+    if not compose_path.exists():
+        check(False, "deploy/docker-compose.yml 存在（§3.6 的容器部署入口）")
+    else:
+        check(True, "deploy/docker-compose.yml 存在")
+        compose = None
+        if _yaml is None:
+            check(False, "PyYAML 可用（解析 compose 需要）", "pip install PyYAML")
+        else:
+            try:
+                compose = _yaml.safe_load(compose_path.read_text(encoding="utf-8"))
+                check(True, "compose 文件能被 YAML 解析")
+            except Exception as exc:  # noqa: BLE001 - 解析失败原因要原样报出来
+                check(False, "compose 文件能被 YAML 解析",
+                      f"{type(exc).__name__}: {exc}")
+
+        if isinstance(compose, dict):
+            svc = (compose.get("services") or {}).get("liz-bot") or {}
+            check(bool(svc), "存在 liz-bot 服务")
+            build = svc.get("build") or {}
+            env_map = svc.get("environment") or {}
+
+            # build.context 写错成 "." 的话，构建上下文会变成 deploy/，
+            # 镜像里就没有 run.py —— 而且要到容器启动才炸。
+            ctx = str(build.get("context") or "").strip()
+            ctx_abs = (compose_path.parent / ctx).resolve()
+            check(ctx_abs == REPO, f"build.context 指回仓库根（{ctx!r}）", str(ctx_abs))
+            df = str(build.get("dockerfile") or "").strip()
+            check(bool(df) and (REPO / df).exists(), f"Dockerfile 存在（{df!r}）")
+
+            # 挂载点 ↔ LIZ_DATA_DIR
+            mounts = set()
+            for v in (svc.get("volumes") or []):
+                if isinstance(v, str) and ":" in v:
+                    mounts.add(v.split(":")[1])
+            data_dir = str(env_map.get("LIZ_DATA_DIR") or "").strip()
+            check(data_dir in mounts,
+                  f"LIZ_DATA_DIR({data_dir!r}) 与卷挂载点一致",
+                  "挂载点:" + ", ".join(sorted(mounts)))
+
+            # 探针打的是**容器内**端口，端口号来自 HEALTHZ_PORT，两边必须一致
+            hz = str(env_map.get("HEALTHZ_PORT") or "").strip()
+            pub = [p for p in (svc.get("ports") or []) if isinstance(p, str)]
+            targets = {p.rsplit(":", 1)[-1] for p in pub}
+            check(hz in targets, f"HEALTHZ_PORT({hz!r}) 与 ports 容器侧一致",
+                  "ports:" + ", ".join(pub))
+
+            # 凭据只能来自 env_file —— 这个文件是要进 git 的
+            env_files = svc.get("env_file") or []
+            if isinstance(env_files, str):
+                env_files = [env_files]
+            env_files = [str(f) for f in env_files]
+            check(bool(env_files), "凭据走 env_file 而非硬编码")
+            # 比 resolve 后的路径而不是字符串：`./.env` / `.env` / `deploy/.env`
+            # 是同一个文件的三种写法，按字符串比会误报。
+            env_paths = {(compose_path.parent / f).resolve() for f in env_files}
+            check((compose_path.parent / ".env").resolve() in env_paths,
+                  "env_file 指向 deploy/.env", ", ".join(env_files))
+            check((compose_path.parent / ".env.example").exists(),
+                  "deploy/.env.example 模板存在（.env 被 gitignore 排除）")
+
+            raw = compose_path.read_text(encoding="utf-8")
+            hardcoded = [
+                k for k in ("QQ_BOT_APPID", "QQ_BOT_SECRET")
+                if re.search(rf"^\s*{k}\s*[:=]\s*\S", raw, re.M)
+            ]
+            check(not hardcoded, "compose 内无硬编码凭据", ", ".join(hardcoded))
+
+    # compose 与 .env 都不能进镜像层（镜像是可被拉取的）
+    check(is_excluded("deploy/docker-compose.yml", pats),
+          ".dockerignore 排除了 deploy/docker-compose.yml")
+    check(is_excluded("deploy/.env", pats),
+          ".dockerignore 排除了 deploy/.env")
 
     print()
     print("=" * 72)

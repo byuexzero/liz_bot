@@ -61,5 +61,10 @@ liz_bot/emoji_gif
 *.reg
 三套SDGB实现对比.md
 
-# deploy/ 是给 VPS（systemd）用的，容器里没有 systemd，放进去只会让人困惑
+# deploy/ 是给「自己管操作系统的 VPS」用的：systemd 单元 + docker-compose.yml。
+# 容器里没有 systemd、也不会在里面跑 compose，放进去只会让人困惑。
+#
+# 这一条同时是**安全**相关的：deploy/.env 是容器版的凭据文件，
+# 万一它存在（本地试跑过），不进镜像就等于多一层保险 ——
+# 镜像层是可被拉取的。_tools/simulate_container.py 的 F 节会验这条。
 deploy
