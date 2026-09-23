@@ -320,6 +320,35 @@ sudo systemctl restart liz-bot
 按 §0.1 的实测，2 GB 内存完全放得下 Docker 守护进程，**两条路都跑得动**。
 想要"环境绝对可复现"就选 Docker。
 
+#### 3.6.0 先看这张表：真机上实际会按什么顺序卡住
+
+下面这套流程**在一台真实的腾讯云轻量服务器上从头跑通过一次**，这是当时的
+实际卡点顺序 —— 和"看起来合理的顺序"不一样。按顺序往下读最省时间。
+
+| # | 症状 | 去哪看 |
+|---|---|---|
+| 1 | 不知道公网 IP；`ip addr` 只看到 `10.x` | §3.6.1 ① —— 公网 IP 是 NAT 映射的，不在网卡上，要用元数据服务取 |
+| 2 | `permission denied ... /var/run/docker.sock` | §3.6.1 ③ —— 用户没加进 docker 组 |
+| 3 | **同一个报错又来一次**，`newgrp docker` 也"没用" | §3.6.1 ③ —— `newgrp` 只影响子 shell，**必须断开重连 SSH** |
+| 4 | `Cloning into 'liz_bot'...` 卡住不动 | §3.6.9 —— 出不了 GitHub，改用 bundle 从本机 scp 过去 |
+| 5 | 构建卡在 `Get:… deb.debian.org` | §3.6.3 办法一 —— 换 apt 源 |
+| 6 | 构建以 `exit code: 1` 失败，报 `from versions: none` | §3.6.3 办法一 —— **不是包不存在，是 pip 连不上 PyPI** |
+
+> **第 2、3 条值得单独说**：它俩报的是同一个错，但原因不同 —— 第 2 条是没加组，
+> 第 3 条是加了组但当前会话没生效。**看到同一个错第二次，先怀疑"上一步的修复
+> 根本没生效"，而不是"修复方法不对"。**
+>
+> **第 6 条也值得单独说**：`from versions: none` 长得像"包名写错了"，
+> 实际上是网络超时。**别去改包名或版本号** —— 那是条死路。
+
+**构建前请先做这一步**（不花时间，能省掉一次几分钟的白等）：
+
+```bash
+docker compose -f deploy/docker-compose.yml config | grep -A3 'args:'
+```
+
+确认 `APT_MIRROR` 和 `PIP_INDEX` 都打印出了值再构建。空的就是没传进去。
+
 #### 3.6.1 登服务器、装 Docker、配镜像加速
 
 **① 拿到公网 IP 和用户名，SSH 上去。**
@@ -728,6 +757,60 @@ git log --oneline -1                      # 确认拿到最新提交
 | **Gitee「从 GitHub 导入仓库」** | 官方功能、国内快、安全。导入后在服务器 clone Gitee 地址，再 `git remote set-url origin` 改回 GitHub |
 | **codeload 下 tarball** | `curl -L -o liz_bot.tar.gz https://github.com/byuexzero/liz_bot/archive/refs/heads/main.tar.gz`。**没有 `.git`**，以后只能整包覆盖更新，`git pull` 用不了 |
 | 第三方 GitHub 代理 | 能用但**不建议**：它们中间人你的流量，且这类站点存活期普遍很短。真要试请自行确认可信度 |
+
+#### 3.6.10 跑起来之后，确认这几件事
+
+构建成功、容器起来 ≠ 部署完成。下面几步各花十几秒，但能挡掉后面几天的
+"怎么突然不吭声了"。
+
+**① 容器是 healthy 而不是只有 running。**
+
+```bash
+docker compose -f deploy/docker-compose.yml ps
+curl -s 127.0.0.1:8080
+```
+
+`curl` 的返回体里要能看到 `"bot": "ready"`。**注意区分 `starting` 和
+`ready`** —— 状态码永远是 200，真正说明问题的是 body 里的这个字段
+（设计动机见 `liz_bot/healthz.py`）。看到 `starting` 就再等几秒。
+
+**② 重启一次机器，确认它会自己回来。**
+
+```bash
+sudo reboot
+# 重新 SSH 上来之后
+docker compose -f /opt/liz_bot/deploy/docker-compose.yml ps
+```
+
+`restart: unless-stopped` 只在**容器退出**时拉起；开机自启靠的是 Docker
+守护进程本身被设为开机启动（`get.docker.com` 的安装脚本会做这件事）。
+这两件事是分开的，所以必须真的重启验一次 —— **不验就等于不知道**。
+
+**③ 数据卷里真的在写东西。**
+
+```bash
+sudo ls -la /opt/liz_bot/deploy/data
+```
+
+目录属 root（容器以 root 运行）。如果这里是空的而机器人"看起来在跑"，
+说明卷没挂上 —— 日志和 AI 会话历史正写在容器层里，**重启就全没**。
+
+**④ 内存占用符合预期。**
+
+```bash
+docker stats --no-stream
+```
+
+按 §0.1 的实测应该在 50 MB 上下、不超过 `mem_limit` 的 256 MB。
+
+**⑤ 凭据与授权（容易被忽略，但不是可选项）。**
+
+- **轮换你在部署过程中贴到过聊天/日志里的凭据**：GitHub PAT、QQ Bot
+  AppSecret。部署完就该吊销重发 —— 部署期间它们出现在终端输出里的机会
+  太多了。
+- **AGPL 第 13 条**：你正在以网络服务形式把这个机器人提供给群成员，
+  因此**有义务向他们提供对应源码**。本仓库是公开的，所以最简单的做法
+  就是在群公告/机器人说明里给出仓库地址。详见 README 的「许可」一节。
 
 ---
 
