@@ -322,9 +322,29 @@ sudo systemctl restart liz-bot
 
 #### 3.6.1 登服务器、装 Docker、配镜像加速
 
-**① SSH 上去。** 控制台「概要」页有公网 IP，用户名也在那一页。
-实测腾讯云 Ubuntu 系统镜像的用户名是 **`ubuntu`**（不是 `root`）；
-应用镜像通常是 `lighthouse`。拿不准就直接看控制台：
+**① 拿到公网 IP 和用户名，SSH 上去。**
+
+公网 IP 有三个来源，任选：
+
+```bash
+# 最可靠：腾讯云元数据服务。只允许从实例内部访问、走内网，
+# 所以就算这台机器出不了公网（比如 GitHub 被卡）它照样能用。
+curl -s http://metadata.tencentyun.com/latest/meta-data/public-ipv4; echo
+
+# 也可以问外部服务（前提是能出公网）
+curl -s https://api.ipify.org; echo
+
+# 或者看控制台：轻量应用服务器 → 实例列表 → 点进实例 → 「概要」页
+```
+
+> ⚠️ **别用 `ip addr` / `ifconfig`** —— 那显示的是**内网 IP**（`10.x.x.x`）。
+> 腾讯云的公网 IP 是 NAT 映射的，不在网卡上，拿它去 `scp` 连不上。
+>
+> 顺带：这台机器已经有公网 IP 才能被访问，但**IP 可能变**（除非绑了弹性 IP）。
+> 以后连不上先回来查一遍。
+
+用户名看镜像类型：实测腾讯云 Ubuntu 系统镜像是 **`ubuntu`**（不是 `root`），
+应用镜像通常是 `lighthouse`。控制台「概要」页也写着。
 
 ```bash
 ssh ubuntu@你的公网IP
