@@ -392,7 +392,8 @@ docker info | grep -A2 "Registry Mirrors"   # 确认生效
 #### 3.6.2 拉代码、起容器
 
 ```bash
-# 1. 拉代码（仓库很小：67 个文件、约 1.8 MB，4 Mbps 下一分钟以内）
+# 1. 拉代码（仓库很小：pack 仅 883 KB / 69 个文件，正常几秒完成）
+#    若卡在 "Cloning into 'liz_bot'..." 不动，见 §3.6.9 的 scp 兜底方案
 sudo mkdir -p /opt && cd /opt
 sudo git clone https://github.com/byuexzero/liz_bot.git
 sudo chown -R "$USER":"$USER" /opt/liz_bot   # sudo git clone 出来的文件属 root
@@ -549,6 +550,7 @@ docker run -d \
 
 | 现象 | 原因 | 怎么办 |
 |---|---|---|
+| `git clone` 停在 `Cloning into 'liz_bot'...` | 这台机器出不了 GitHub（不是慢 —— 才 883 KB） | 见 [§3.6.9](#369-git-clone-卡住时从本机-scp-过去)：从本机 `git bundle` + `scp` |
 | `docker pull` 卡住 / `i/o timeout` | 没配镜像加速，或配了但不在腾讯云内网 | 回 [§3.6.1](#361-登服务器装-docker配镜像加速) 第 ④ 步；`docker info` 里要能看到 `Registry Mirrors` |
 | `permission denied … /var/run/docker.sock` | 当前用户不在 `docker` 组 | [§3.6.1](#361-登服务器装-docker配镜像加速) 第 ③ 步：`sudo usermod -aG docker "$USER"` + `newgrp docker` |
 | 构建卡在 `Get:… deb.debian.org` | Debian 官方源在国内慢 | 加 `--build-arg APT_MIRROR=mirrors.cloud.tencent.com`，见 [§3.6.3](#363-首次构建慢怎么办) |
@@ -566,6 +568,56 @@ docker run -d \
 > ```
 >
 > `"bot"` 是 `starting` 就说明进程活着但还没连上 QQ。
+
+#### 3.6.9 `git clone` 卡住时：从本机 scp 过去
+
+**症状**：停在 `Cloning into 'liz_bot'...` 长时间不动。
+
+这基本不是"慢"，是**这台机器到 GitHub 的连接被卡住**了 —— 仓库的 pack
+只有 **883 KB**（12 个 commit、69 个文件），正常几秒就该开始打印
+`Receiving objects`。先判断到底是哪种：
+
+```bash
+timeout 12 curl -sI https://github.com 2>&1 | head -2
+timeout 12 curl -sI https://codeload.github.com 2>&1 | head -2
+```
+
+两条都超时 → 再重试多少次都一样，得绕开 GitHub。
+
+> **关键前提：4 Mbps 限的是出流量，scp 上传到服务器不受它影响。**
+> 883 KB 的包秒传，这条路比等 GitHub 快得多。
+
+```bash
+# ① 在你本机（仓库目录里）打包 —— 只含 git 跟踪的文件，带完整历史
+cd D:\projectsega
+git bundle create liz_bot.bundle --all
+git bundle verify liz_bot.bundle          # 应打印 "is okay"
+
+# ② 传到服务器（在你本机执行，不是在服务器上）
+scp liz_bot.bundle ubuntu@你的公网IP:/tmp/
+
+# ③ 在服务器上从 bundle 克隆
+cd /opt
+sudo git clone /tmp/liz_bot.bundle liz_bot
+sudo chown -R "$USER":"$USER" /opt/liz_bot
+cd /opt/liz_bot
+git remote set-url origin https://github.com/byuexzero/liz_bot.git
+git remote -v                             # 确认 origin 已指回 GitHub
+git log --oneline -1                      # 确认拿到最新提交
+```
+
+> `git bundle` 就是"把仓库打成单个文件"，clone 出来有**完整历史**，
+> 唯一区别是 `origin` 一开始指向那个文件 —— 所以第 ③ 步必须 `set-url`
+> 改回 GitHub，否则以后 `git pull` 会去拉那个本地文件。
+> `*.bundle` 已在 `.gitignore` 里，不会被误提交。
+
+**其他备选**，按推荐程度排序：
+
+| 办法 | 说明 |
+|---|---|
+| **Gitee「从 GitHub 导入仓库」** | 官方功能、国内快、安全。导入后在服务器 clone Gitee 地址，再 `git remote set-url origin` 改回 GitHub |
+| **codeload 下 tarball** | `curl -L -o liz_bot.tar.gz https://github.com/byuexzero/liz_bot/archive/refs/heads/main.tar.gz`。**没有 `.git`**，以后只能整包覆盖更新，`git pull` 用不了 |
+| 第三方 GitHub 代理 | 能用但**不建议**：它们中间人你的流量，且这类站点存活期普遍很短。真要试请自行确认可信度 |
 
 ---
 
