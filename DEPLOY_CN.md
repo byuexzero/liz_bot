@@ -499,18 +499,47 @@ docker compose -f deploy/docker-compose.yml build \
 docker compose -f deploy/docker-compose.yml up -d    # ← 不要加 --build
 ```
 
+> ⚠️ **`--build-arg` 只属于 `build`，`up` 不认识它。** 写成
+> `docker compose up -d --build-arg ...` 会直接报 `unknown flag: --build-arg`
+> 而**根本没开始构建**。必须像上面这样拆成两条命令。
+>
+> 另外注意最后一条**不要**加 `--build`：`up --build` 会不带参数重新构建，
+> 把刚才 `--build-arg` 的成果冲掉，等于白等一次。（所以更推荐办法一，
+> 写进 `.env` 就不会有这个问题。）
+
 > 这三个办法都**只影响构建速度，不影响镜像内容** —— `APT_MIRROR` 只重写源的
 > 主机名、不换发行版和组件；`PIP_INDEX` 只换下载来源，装什么版本仍由
 > `requirements.txt` 的约束决定；`build-essential` 是装完即卸的编译环境。
 
 如果换完源之后**还**慢，看构建日志卡在哪一段：
 
-- 卡在 `Downloading <包名>...whl` → 瓶颈在 PyPI（约 40 MB）。用上面的
-  `PIP_INDEX`（已核对本项目全部直接依赖在该镜像上都有，注意 PyPI 包名是
-  `qq-botpy`、`import` 名才是 `botpy`）。万一某个传递依赖缺失，pip 会明确报
-  `No matching distribution`，**不会静默装错版本** —— 那时清空这行重建即可。
+- 卡在 `Downloading <包名>...whl` → 瓶颈在 PyPI。**这是本机实测到的真实
+  瓶颈，不是假想**：同一台服务器上，apt 换源后 82.5 MB 只用了 9 秒
+  （8.8 MB/s），而直连 PyPI 下 770 kB 的 wheel 花了 21 秒（37 kB/s），
+  475 kB 的 `pycryptodome` 索引页直接撞上 pip 默认的 15 秒读超时。
+  用上面的 `PIP_INDEX` 即可（已核对本项目全部直接依赖在该镜像上都有；
+  注意 PyPI 包名是 `qq-botpy`、`import` 名才是 `botpy`）。
 - 卡在 `Building wheel for ...` → 说明某个包在源码编译，这时**不能**删
   `build-essential`，用办法一换 apt 源就够了。
+
+> ⚠️ **一个很误导人的报错：`from versions: none` 不是"包不存在"。**
+> PyPI 索引请求超时时，pip 报的是：
+>
+> ```
+> ERROR: Could not find a version that satisfies the requirement pycryptodome>=3.23.0
+> ERROR: No matching distribution found for pycryptodome>=3.23.0
+> ```
+>
+> 看起来像这个包在 PyPI 上没有，**实际是网络挂了** —— 前面几个包明明
+> 已经成功解析并下载了。**看到 `from versions: none` 先怀疑网络，别去改
+> 包名或版本号**，否则会在一个不存在的问题上耗很久。
+
+**关于镜像本身的可信度**（已实测，不是看文档写的）：
+`mirrors.cloud.tencent.com/pypi/simple` 的索引页里，wheel 链接是**相对路径**
+（官方 PyPI 是指向 `files.pythonhosted.org` 的绝对路径），也就是**它自己托管
+wheel 文件**，不是只代理索引、下载仍回源到慢主机。实测拉取
+`pycryptodome-3.23.0-...manylinux_2_17_x86_64.whl`：3.7 MB/s，
+**sha256 与官方完全一致**。所以换源不影响装出来的东西。
 
 #### 3.6.4 compose 里几个关键设置
 
