@@ -8,7 +8,7 @@
 
 - **`liz_bot/`** —— QQ 群机器人。曲库检索、表情包、AI 对话、随机抽歌等指令。
 - **`maimai/`** —— 舞萌 DX 服务端 API 客户端。加密层、扫码、用户数据容器、
-  上号工作流、批量抓取。详见 [`maimai/README.md`](maimai/README.md)。
+  上号工作流、批量抓取。
 
 ---
 
@@ -114,19 +114,18 @@ YAML 路径必须由调用方**显式传入**（见 `run.py`），不会自动�
 > 机器人只读快照。运行期**不再修改仓库内任何文件**，
 > 卷上只需容纳 `ai_chat/` 与 `bot_log/`。
 
-> 📦 **上线前先在本地彩排：[`DEPLOY_LOCAL.md`](DEPLOY_LOCAL.md)**
-> —— 用「云端的方式」（持久化卷 + 探活端口）在本地跑一遍，
-> 并验证重启后 AI 会话与日志不丢。
+> 📦 **部署**：部署说明（本地彩排 / 国内平台 / 容器平台 共三份）
+> **刻意不随仓库分发**，只在本地保留 —— 它们含具体的主机路径与逐步操作，
+> 属于部署者自己的 runbook。
 >
-> 📦 **国内平台部署：[`DEPLOY_CN.md`](DEPLOY_CN.md)**
-> —— 推荐腾讯云轻量（首年 ¥38，且**无需备案**）、阿里云 ECS（¥99/年 续费同价），
-> 含 systemd 开机自启与 Docker Compose 两套配置。
-> 服务器规格已实测推算过：**入门型（2核2G / 4M / 50G）余量在 20 倍以上**
-> —— 峰值内存 47.5 MB、镜像约 165 MB、日志 60 KB/天量级。
+> 仓库内**随代码分发**的部署产物在 `deploy/` 下：systemd 单元、
+> Docker Compose（内存/日志上限、持久化卷、探活端口）、凭据模板。
+> 容器化所需的 `Dockerfile` / `.dockerignore` 在仓库根目录，
+> 可直接用于任何容器平台。
 >
-> 📦 **容器平台通用说明见 [`DEPLOY_PAAS.md`](DEPLOY_PAAS.md)**
-> —— 挂载持久化卷、环境变量、探活端口、部署前自检。
-> 仓库根目录的 `Dockerfile` 可直接用于任何容器平台。
+> 规格余量结论（与那三份文档无关，可公开）：按实测推算，
+> **入门型（2核2G / 4M / 50G）余量在 20 倍以上** ——
+> 峰值内存 47.5 MB、镜像约 165 MB、日志 60 KB/天量级。
 
 ---
 
@@ -147,7 +146,6 @@ python _tools/local_rehearsal.py --plain  # 等价于直接 python run.py
 ```
 
 **跑两次**即可验证「重启后卷上数据不丢」（第二次会报告卷上已有 `ai_chat`、`bot_log` 且不会覆盖）。
-详见 [`DEPLOY_LOCAL.md`](DEPLOY_LOCAL.md)。
 
 用容器跑（本地复现线上形态）：
 
@@ -168,9 +166,6 @@ projectsega/
 ├── requirements.txt
 ├── Dockerfile              容器镜像（任意容器平台可用）
 ├── .dockerignore
-├── DEPLOY_LOCAL.md         本地部署验证（上线前彩排）
-├── DEPLOY_CN.md            国内平台部署（轻量服务器 / ECS / Sealos）
-├── DEPLOY_PAAS.md          容器平台通用部署说明（卷 / 环境变量 / 自检）
 ├── deploy/                 VPS 部署产物（容器里用不到，已被 .dockerignore 排除）
 │   ├── liz-bot.service     systemd 单元（venv 方式开机自启）
 │   ├── docker-compose.yml  Docker 方式（内存/日志上限、卷、探活）
@@ -194,7 +189,7 @@ projectsega/
 │   ├── divingfish_songs/   歌曲数据库（水鱼，随仓库分发）
 │   ├── yuzuchan_aliases/   歌曲别名库（柚子，随仓库分发）
 │   └── texts/              回复文案（replies.json，随仓库分发）
-└── maimai/                 舞萌 DX API 客户端，见 maimai/README.md
+└── maimai/                 舞萌 DX API 客户端
     ├── config.py           .env 加载
     ├── client.py           业务接口客户端
     ├── qr.py               A.I.M.E. 扫码

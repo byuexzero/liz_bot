@@ -5,7 +5,7 @@
 # 托管容器平台（Sealos 等）用不到这个文件 —— 它们有自己的控制台，
 # 直接吃仓库根目录的 Dockerfile 就行。
 #
-# 部署步骤与规格推算见 DEPLOY_CN.md §3.6。
+# 部署步骤见本地文档（不随仓库分发）。
 #
 # 用法（在**仓库根目录**执行）：
 #     cp deploy/.env.example deploy/.env   # 然后填 AppID / AppSecret
@@ -13,7 +13,7 @@
 #     docker compose -f deploy/docker-compose.yml logs -f
 #
 # 首次构建很慢（apt 200MB + pip 40MB，国内直连可能几十分钟）：
-# 在 deploy/.env 里加下面两行再构建，见 DEPLOY_CN.md §3.6.3。
+# 在 deploy/.env 里加下面两行再构建。
 #     APT_MIRROR=mirrors.cloud.tencent.com
 #     PIP_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
 # 构建前可用 `docker compose -f deploy/docker-compose.yml config | grep -A3 args:`
@@ -75,7 +75,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
-    # 实测峰值 47.5 MB（见 DEPLOY_CN.md §0.1），给 256 MB 是 5 倍余量。
+    # 实测峰值 47.5 MB，给 256 MB 是 5 倍余量。
     #
     # 为什么还是要设：不设限的话，将来某次内存泄漏会先吃光这台 2G 机器，
     # 连 Docker 守护进程本身都会被 OOM 拖死，症状是「整台机器 SSH 都卡」，

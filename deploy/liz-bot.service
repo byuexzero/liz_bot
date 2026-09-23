@@ -1,6 +1,6 @@
 # Liz QQ 机器人 —— systemd 服务单元
 #
-# 用于轻量应用服务器 / ECS 等 VPS 部署（见 DEPLOY_CN.md）。
+# 用于轻量应用服务器 / ECS 等 VPS 部署。
 #
 # 安装：
 #   sudo cp deploy/liz-bot.service /etc/systemd/system/
@@ -24,7 +24,6 @@
 
 [Unit]
 Description=Liz QQ Bot (舞萌 DX / maimai DX)
-Documentation=file:/opt/liz_bot/DEPLOY_CN.md
 After=network-online.target
 Wants=network-online.target
 

@@ -85,7 +85,6 @@ eaquira-master/
 #   simulate_container.py    .dockerignore 有没有误伤运行必需文件
 #   check_wheels.py          依赖在 linux/amd64 上是否需要源码编译
 #   local_rehearsal.py       用「云端的方式」在本地跑一遍（卷 + 探活端口）
-# 详见 DEPLOY_CN.md / DEPLOY_LOCAL.md。
 #
 # 后两个是**数据更新脚本** —— 曲库与别名库都需要人工更新，脚本必须能拿到：
 #   fetch_music_data.py      从水鱼拉取完整乐曲信息到本地
@@ -163,7 +162,26 @@ liz_bot/yuzuchan_aliases/*.etag
 # ==========================================================================
 *.saz
 
-# git bundle 是打包产物（用于"GitHub 拉不动时从本机 scp 到服务器"），
-# 生成方式见 DEPLOY_CN.md §3.6.9。别提交它 —— 它含完整历史但会过期。
+# git bundle 是打包产物（用于"GitHub 拉不动时从本机 scp 到服务器"）。
+# 别提交它 —— 它含完整历史但会过期。
 *.bundle
 _commitmsg.tmp
+
+# ==========================================================================
+# 部署说明文档 —— 只在本地保留，不随仓库分发
+# ==========================================================================
+# 这三份是部署者自己的 runbook，含具体主机路径与逐步操作，面向公开分发
+# 没有意义（也和 AGPL「提供对应源码」的义务无关 —— 那不是源码）。
+#
+# 注意：**光写 .gitignore 是不够的** —— 这些文件在本规则加进来之前
+# 已被 git 跟踪，.gitignore 对已跟踪文件无效。必须配一次
+# `git rm --cached <file>` 才能真正从仓库移除（本地文件保留）。
+# 只加规则不 rm，会出现"规则写了、文件照样被提交"的假象。
+DEPLOY_CN.md
+DEPLOY_LOCAL.md
+DEPLOY_PAAS.md
+maimai/README.md
+
+# 部署产物本身**仍然随仓库分发**（deploy/ 下的 systemd 单元、
+# docker-compose.yml、.env.example）—— 它们是可执行的配置，不是说明文档。
+# 注意 deploy/ 整体被 .dockerignore 排除，但**不在** .gitignore 里。
