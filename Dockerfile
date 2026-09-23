@@ -64,12 +64,32 @@ COPY requirements.txt ./
 #
 # 只重写主机名、不换发行版/组件，所以镜像内容与默认构建一致 ——
 # 这个参数影响的是下载速度，不是构建结果。
+#
+# 说明：/debian-security 只发布 Packages.xz，**不发布 Packages.gz**
+# （已核对 trixie-security / bookworm-security 都是 .xz 200 / .gz 404）。
+# 这是 Debian 安全归档的正常形态，apt 原生支持 xz，不是镜像残缺 ——
+# 手工探测时别拿 .gz 去试，否则会误判。
 ARG APT_MIRROR=""
+
+# 构建期的 PyPI 索引地址。留空 = 沿用 pip 默认的 pypi.org。
+#
+# 与 APT_MIRROR 同样的理由：apt 拉完 200MB 之后紧接着就是 pip 装 13 个依赖
+# （约 40MB wheel）。在腾讯云实例上可填：
+#
+#     docker build --build-arg PIP_INDEX=https://mirrors.cloud.tencent.com/pypi/simple -t liz-bot .
+#
+# 已核对该镜像 10 个直接依赖的 simple 索引全部可访问（含 qq-botpy，
+# 注意 PyPI 包名是 qq-botpy、import 名才是 botpy）。
+# 该镜像对包名**大小写敏感**（`PyYAML/` 404、`pyyaml/` 200），
+# 但 pip 会先按 PEP 503 归一化成小写再请求，所以实际不受影响。
+ARG PIP_INDEX=""
+
 RUN if [ -n "$APT_MIRROR" ]; then \
       for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
         if [ -f "$f" ]; then sed -i "s|deb.debian.org|$APT_MIRROR|g" "$f"; fi; \
       done; \
     fi; \
+    if [ -n "$PIP_INDEX" ]; then export PIP_INDEX_URL="$PIP_INDEX"; fi; \
     apt-get update \
  && apt-get install -y --no-install-recommends build-essential tzdata \
  && pip install --no-cache-dir -r requirements.txt \

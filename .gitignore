@@ -166,3 +166,4 @@ liz_bot/yuzuchan_aliases/*.etag
 # git bundle 是打包产物（用于"GitHub 拉不动时从本机 scp 到服务器"），
 # 生成方式见 DEPLOY_CN.md §3.6.9。别提交它 —— 它含完整历史但会过期。
 *.bundle
+_commitmsg.tmp

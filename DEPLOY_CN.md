@@ -458,17 +458,25 @@ docker compose -f deploy/docker-compose.yml logs -f
 `Dockerfile` 里的 `apt-get install build-essential` 要从 Debian 官方源
 拉约 **200 MB** 的 deb 包，国内直连可能几十分钟。
 
-**办法一（推荐）：在 `deploy/.env` 里指定 apt 镜像源。**
+**办法一（推荐）：在 `deploy/.env` 里指定 apt 与 PyPI 镜像源。**
 
 ```bash
-echo 'APT_MIRROR=mirrors.cloud.tencent.com' >> deploy/.env
+cat >> deploy/.env <<'EOF'
+APT_MIRROR=mirrors.cloud.tencent.com
+PIP_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
+EOF
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
 > 已核对 `mirrors.cloud.tencent.com` 是**完整的 Debian 镜像**：
 > `/debian`（bookworm、trixie）与 `/debian-security`
-> （bookworm-security、trixie-security）四条路径全部 200。
-> 替换只动主机名、不动 scheme，源写成 http 还是 https 都行。
+> （bookworm-security、trixie-security）的 `Release` 全部 200，
+> 主归档的 `Packages.gz`/`Packages.xz` 也都在。
+>
+> ⚠️ **但 `/debian-security` 只发布 `Packages.xz`，没有 `Packages.gz`**
+> （实测 trixie-security、bookworm-security 均为 `.xz` 200 / `.gz` 404）。
+> 这是 Debian 安全归档的正常形态，apt 原生支持 xz —— **不是镜像残缺**。
+> 手工探测时别拿 `.gz` 去试，否则会得出"镜像坏了"的错误结论。
 >
 > **为什么不每次敲 `--build-arg`**：`docker compose up -d --build` 会
 > **不带**参数重新构建，把 `--build-arg` 的成果悄悄冲掉（踩过）。
@@ -486,19 +494,21 @@ Dockerfile 的注释里本来就说可以删：13 个顶层依赖在 linux/amd64
 
 ```bash
 docker compose -f deploy/docker-compose.yml build \
-  --build-arg APT_MIRROR=mirrors.cloud.tencent.com
+  --build-arg APT_MIRROR=mirrors.cloud.tencent.com \
+  --build-arg PIP_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
 docker compose -f deploy/docker-compose.yml up -d    # ← 不要加 --build
 ```
 
-> 这两个办法都**只影响构建速度，不影响镜像内容** —— `APT_MIRROR`
-> 只重写源的主机名，不换发行版和组件；`build-essential` 是装完即卸的编译环境。
+> 这三个办法都**只影响构建速度，不影响镜像内容** —— `APT_MIRROR` 只重写源的
+> 主机名、不换发行版和组件；`PIP_INDEX` 只换下载来源，装什么版本仍由
+> `requirements.txt` 的约束决定；`build-essential` 是装完即卸的编译环境。
 
-如果换完 apt 源之后**还**慢，看构建日志卡在哪一段：
+如果换完源之后**还**慢，看构建日志卡在哪一段：
 
-- 卡在 `Downloading <包名>...whl` → 瓶颈在 PyPI（约 40 MB）。在 `Dockerfile`
-  的 `pip install` 那一行加上 `-i https://mirrors.cloud.tencent.com/pypi/simple`
-  即可（**没有**做成 build arg，因为 pip 慢的情况比 apt 少见得多，
-  多一个参数就多一处要维护的东西）。
+- 卡在 `Downloading <包名>...whl` → 瓶颈在 PyPI（约 40 MB）。用上面的
+  `PIP_INDEX`（已核对本项目全部直接依赖在该镜像上都有，注意 PyPI 包名是
+  `qq-botpy`、`import` 名才是 `botpy`）。万一某个传递依赖缺失，pip 会明确报
+  `No matching distribution`，**不会静默装错版本** —— 那时清空这行重建即可。
 - 卡在 `Building wheel for ...` → 说明某个包在源码编译，这时**不能**删
   `build-essential`，用办法一换 apt 源就够了。
 

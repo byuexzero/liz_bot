@@ -34,6 +34,13 @@ services:
         # --build` 会**不带**参数重新构建，把 --build-arg 的成果悄悄冲掉 ——
         # 这个坑踩过。放进 compose 就不会漏。
         APT_MIRROR: ${APT_MIRROR:-}
+        # 构建期的 PyPI 索引。留空 = pip 默认的 pypi.org。
+        # apt 拉完 200MB 紧接着就是 pip 装约 40MB 的 wheel，同样值得换源：
+        #
+        #     PIP_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
+        #
+        # 只影响下载速度，不影响装出来的东西（同样的版本约束）。
+        PIP_INDEX: ${PIP_INDEX:-}
     image: liz-bot:latest
     container_name: liz-bot
 
