@@ -6,7 +6,7 @@
 而这两处恰好都是「静默失败」的重灾区：
 
 ======================  ==========================================
-``LIZ_DATA_DIR``        云端文件系统是临时的 → 别名表会无声消失
+``LIZ_DATA_DIR``        云端文件系统是临时的 → 会话历史/日志会无声消失
 ``HEALTHZ_PORT``        云端按「有没有监听端口」判活 → 可能反复重启
 ======================  ==========================================
 
@@ -23,7 +23,7 @@
     python _tools/local_rehearsal.py --port 18734
 
 ``--volume`` 指向的目录会被**反复复用**：第二次启动时它会告诉你
-"卷上已有别名表，未被覆盖" —— 这正是云端「用户别名不会丢」的本地证明。
+"卷上已有：ai_chat, bot_log" —— 这正是云端「运行期写入不会丢」的本地证明。
 所以**建议至少跑两次**。
 
 退出：``Ctrl+C``。
@@ -85,7 +85,6 @@ def check_deps() -> bool:
     # import 名 -> pip 包名（两者不同，报错时要给对名字）
     required = {
         "botpy": "qq-botpy",
-        "ijson": "ijson",
         "yaml": "PyYAML",
         "aiohttp": "aiohttp",
     }
@@ -149,14 +148,13 @@ def check_port(port: int) -> bool:
 def prepare_volume(volume: Path) -> None:
     """建卷目录，并判断这是首次还是再次启动。"""
     volume.mkdir(parents=True, exist_ok=True)
-    alias = volume / "alias.json"
-    if alias.is_file():
-        size = alias.stat().st_size
-        say(f"[OK] 数据卷 {volume}")
-        say(f"     卷上已有 alias.json（{size} 字节）→ 本次**不会**覆盖它")
-        say("     这就是云端「用户别名不会丢」的本地证明")
+    existing = sorted(p.name for p in volume.iterdir()) if volume.is_dir() else []
+    say(f"[OK] 数据卷 {volume}")
+    if existing:
+        say(f"     卷上已有：{', '.join(existing)} → 本次**不会**覆盖它们")
+        say("     这就是云端「运行期写入不会丢」的本地证明")
     else:
-        say(f"[OK] 数据卷 {volume}（空卷，本次会播种基线别名表）")
+        say("     空卷（首次启动，将创建 ai_chat/ 与 bot_log/）")
 
 
 # ---------------------------------------------------------------------------
@@ -328,10 +326,13 @@ def main() -> int:
     say()
     say("接下来在 QQ 群里验证功能（这一步本地和云端都一样）：")
     say("  1. 群里 @机器人 发  /id 8        → 应返回《True Love Song》")
-    say("  2. 发一个不存在的指令            → 应返回「未知指令」而非静默")
-    say("  3. 试一条别名新增指令，然后 **再跑一次本脚本**")
-    say("     → 应看到「卷上已有 alias.json，本次不会覆盖」")
-    say("     这就是「别名在重启后不丢」的证明，也是云端最容易出事的一点")
+    say("  2. 发 /别名查歌 会员制餐厅        → 也应返回《True Love Song》")
+    say("     （该别名不是曲名，能命中就说明别名库已就位）")
+    say("  3. 发一个不存在的指令            → 应返回「未知指令」而非静默")
+    say("  4. **再跑一次本脚本**")
+    say("     → 应看到「卷上已有：ai_chat, bot_log」")
+    say("     这就是「运行期写入落在卷上、重启不丢」的证明")
+    say("     （云端最容易出事的一点）")
     say()
     say(f"卷目录：{env.get('LIZ_DATA_DIR', '（未启用）')}")
     return 0

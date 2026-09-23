@@ -3,8 +3,8 @@
 业务逻辑已按职责拆分到以下模块：
 
     song_paths.py       曲库数据路径
-    song_query.py       查歌 / 查别名
-    song_alias.py       添加别名
+    song_query.py       查歌（数据源：水鱼 music_data.json）
+    song_alias.py       别名管理 —— **已暂时移除实现，仅保留接口**
     daily_funcs.py      随机数 / 问候 / 帮助
     command_router.py   指令解析与分发
 
@@ -13,11 +13,14 @@
 
 注：``qr_reply``（扫码查询，对舞萌服务端发包）已**暂时移除**。
 恢复步骤见 ``liz_bot/_已移除功能_舞萌发包.md``。
+
+注：别名功能（查别名 / 加别名）已**暂时移除**，相关接口保留但返回空结果。
+原始实现与数据归档在 ``_backup/liz_bot_song_db_2026-09-23/``。
 """
 
 # 兼容旧路径：原先这些名字都定义在 command_handler 中
 from liz_bot.command_router import handle_command, parse_command
-from liz_bot.song_paths import ALIAS_JSON, SONG_FILE_PATH, song_file
+from liz_bot.song_paths import SONG_FILE_PATH, song_file
 from liz_bot.song_query import (
     BY_ALIAS,
     BY_ANY,
@@ -50,7 +53,6 @@ __all__ = [
     # 曲库路径
     "song_file_path",
     "SONG_FILE_PATH",
-    "ALIAS_JSON",
     "song_file",
     # 查歌
     "select_song",
@@ -77,5 +79,5 @@ __all__ = [
 
 
 if __name__ == "__main__":
-    aaa = select_song('id8', 3)
-    print(aaa)
+    # 手动冒烟：查一首曲目并打印格式化结果
+    print(song_reply("8", BY_ID))

@@ -1,4 +1,4 @@
-"""验证部署相关改动：路径路由 / 空卷播种 / 播种不覆盖 / 健康检查 / 回归。
+"""验证部署相关改动：路径路由 / 空卷播种 / 播种不覆盖 / 健康检查 / 别名库 / 回归。
 
 本脚本不依赖 botpy，只用标准库，因此可在任意 Python 3.10+ 上运行。
 
@@ -23,10 +23,10 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _detect_python() -> list[str]:
-    """挑一个能 ``import ijson, botpy`` 的解释器。
+    """挑一个能 ``import botpy`` 的解释器。
 
     本项目运行依赖装在**系统 Python 3.10** 上，而 PATH 上的 ``python``
-    可能指向 .venv（3.12/3.13，没装 ijson）。用错解释器会误报
+    可能指向 .venv（3.12/3.13，没装 botpy）。用错解释器会误报
     ``ModuleNotFoundError``，看起来像代码坏了 —— 所以这里显式挑一个。
     """
     cands: list[list[str]] = [[sys.executable]]
@@ -43,7 +43,7 @@ def _detect_python() -> list[str]:
     for cand in cands:
         try:
             proc = subprocess.run(
-                cand + ["-c", "import ijson, botpy"],
+                cand + ["-c", "import botpy"],
                 capture_output=True, timeout=90,
             )
         except (OSError, subprocess.SubprocessError):
@@ -88,19 +88,22 @@ def run_probe(code: str, env_extra: dict[str, str] | None = None) -> dict:
 PATHS_PROBE = """
 import json, os, sys
 sys.path.insert(0, os.getcwd())
-from liz_bot import runtime_paths as rp
-from liz_bot.song_paths import ALIAS_JSON, SONGS_JSON, SONG_FILE_PATH, song_file
+from liz_bot import replies, runtime_paths as rp
+from liz_bot.song_paths import (
+    ALIASES_JSON, ALIAS_FILE_PATH, MUSIC_DATA_JSON, SONG_FILE_PATH, song_file,
+)
 out = {
-    "alias": ALIAS_JSON,
-    "songs": SONGS_JSON,
+    "music_data": MUSIC_DATA_JSON,
     "song_dir": SONG_FILE_PATH,
+    "alias_dir": ALIAS_FILE_PATH,
+    "aliases_json": ALIASES_JSON,
+    "text_dir": rp.TEXT_FILE_PATH,
+    "replies_json": replies.REPLIES_JSON,
     "log_dir": rp.LOG_DIR,
     "ai_chat": rp.AI_CHAT_DIR,
     "data_root": rp.DATA_ROOT,
     "volume_backed": rp.is_volume_backed(),
-    "song_file_alias": song_file("alias.json"),
-    "song_file_songs": song_file("songs.json"),
-    "baseline": rp.BASELINE_ALIAS_JSON,
+    "song_file_music_data": song_file("music_data.json"),
     "notes": rp.ensure_dirs(),
 }
 print(json.dumps(out))
@@ -114,25 +117,36 @@ print("A. 回归 —— 未设置 LIZ_DATA_DIR 时，路径应与改动前完全
 print("=" * 72)
 
 base = run_probe(PATHS_PROBE)
-expect_song_dir = str(REPO / "liz_bot" / "maimaiDX_songs")
-expect_alias = str(REPO / "liz_bot" / "maimaiDX_songs" / "alias.json")
+expect_song_dir = str(REPO / "liz_bot" / "divingfish_songs")
+expect_alias_dir = str(REPO / "liz_bot" / "yuzuchan_aliases")
+expect_text_dir = str(REPO / "liz_bot" / "texts")
 expect_log = str(REPO / "bot_log")
 expect_chat = str(REPO / "liz_bot" / "ai_chat")
 
 check(base["data_root"] is None, "DATA_ROOT 为 None（未启用数据卷）")
 check(not base["volume_backed"], "is_volume_backed() 为 False")
-check(base["alias"] == expect_alias, "ALIAS_JSON 落在仓库内", base["alias"])
 check(base["song_dir"] == expect_song_dir, "SONG_FILE_PATH 落在仓库内", base["song_dir"])
-check(base["songs"] == str(Path(expect_song_dir) / "songs.json"), "SONGS_JSON 正确")
+check(
+    base["music_data"] == str(Path(expect_song_dir) / "music_data.json"),
+    "MUSIC_DATA_JSON 正确",
+)
+check(base["alias_dir"] == expect_alias_dir, "ALIAS_FILE_PATH 落在仓库内", base["alias_dir"])
+check(
+    base["aliases_json"] == str(Path(expect_alias_dir) / "aliases.json"),
+    "ALIASES_JSON 正确",
+    base["aliases_json"],
+)
+check(base["text_dir"] == expect_text_dir, "TEXT_FILE_PATH 落在仓库内", base["text_dir"])
+check(
+    base["replies_json"] == str(Path(expect_text_dir) / "replies.json"),
+    "REPLIES_JSON 正确",
+    base["replies_json"],
+)
 check(base["log_dir"] == expect_log, "LOG_DIR 为项目根 bot_log/", base["log_dir"])
 check(base["ai_chat"] == expect_chat, "AI_CHAT_DIR 为 liz_bot/ai_chat/", base["ai_chat"])
 check(
-    base["song_file_alias"] == base["alias"],
-    "song_file('alias.json') 路由到可写 ALIAS_JSON",
-)
-check(
-    base["song_file_songs"] == base["songs"],
-    "song_file('songs.json') 仍指向仓库内只读文件",
+    base["song_file_music_data"] == base["music_data"],
+    "song_file('music_data.json') 仍指向仓库内只读文件",
 )
 
 print()
@@ -145,7 +159,6 @@ with tempfile.TemporaryDirectory(prefix="lizvol_") as vol:
     v = run_probe(PATHS_PROBE, {"LIZ_DATA_DIR": str(volp)})
 
     check(v["volume_backed"], "is_volume_backed() 为 True")
-    check(v["alias"] == str(volp / "alias.json"), "ALIAS_JSON 重定向到卷", v["alias"])
     check(v["log_dir"] == str(volp / "bot_log"), "LOG_DIR 重定向到卷", v["log_dir"])
     check(v["ai_chat"] == str(volp / "ai_chat"), "AI_CHAT_DIR 重定向到卷", v["ai_chat"])
     check(
@@ -154,47 +167,54 @@ with tempfile.TemporaryDirectory(prefix="lizvol_") as vol:
         v["song_dir"],
     )
     check(
-        v["song_file_alias"] == v["alias"],
-        "song_file('alias.json') 跟随卷路径（不会误拿到只读基线）",
+        v["alias_dir"] == expect_alias_dir,
+        "ALIAS_FILE_PATH 不受影响（只读基线仍在镜像内）",
+        v["alias_dir"],
     )
-
-    seeded = volp / "alias.json"
-    check(seeded.is_file(), "空卷首次启动已播种 alias.json")
     check(
-        seeded.read_bytes() == Path(base["baseline"]).read_bytes(),
-        "播种内容与镜像内基线逐字节一致",
+        v["text_dir"] == expect_text_dir,
+        "TEXT_FILE_PATH 不受影响（只读基线仍在镜像内）",
+        v["text_dir"],
     )
     check((volp / "bot_log").is_dir(), "bot_log/ 已在卷上创建")
     check((volp / "ai_chat").is_dir(), "ai_chat/ 已在卷上创建")
 
     print()
     print("=" * 72)
-    print("C. 播种不得覆盖卷上已有数据（用户增量必须安全）")
+    print("C. 启动不得改动卷上已有数据 + 别名写入已停用")
     print("=" * 72)
 
-    marker = [{"name": "__verify_marker__", "alias": ["verify"]}]
-    seeded.write_text(json.dumps(marker, ensure_ascii=False), encoding="utf-8")
+    # C1: 卷上已有数据不能被启动流程碰掉
+    marker = volp / "ai_chat" / "__verify_marker__.json"
+    marker.write_text('{"keep": true}', encoding="utf-8")
 
     run_probe(PATHS_PROBE, {"LIZ_DATA_DIR": str(volp)})
+    check(marker.is_file() and marker.read_text(encoding="utf-8") == '{"keep": true}',
+          "二次启动未改动卷上已有数据")
 
-    after = json.loads(seeded.read_text(encoding="utf-8"))
-    check(after == marker, "二次启动未覆盖卷上已修改的 alias.json", str(after))
-
-    # 再验一次：真实写入路径确实落在卷上
+    # C2: 别名功能已移除 —— add_song_alias 应是纯 no-op，不写任何文件
     w = run_probe(
         """
 import json, os, sys
 sys.path.insert(0, os.getcwd())
-from liz_bot import runtime_paths as rp
-from liz_bot.song_alias import add_song_alias
+from liz_bot import runtime_paths as rp, song_alias
 rp.ensure_dirs()
-ok = add_song_alias("__verify_song__", "卷上别名", rp.ALIAS_JSON)
-data = json.load(open(rp.ALIAS_JSON, encoding="utf-8"))
-print(json.dumps({"ok": ok, "has": any(i.get("name") == "__verify_song__" for i in data)}))
+before = sorted(os.listdir(rp.AI_CHAT_DIR))
+ok = song_alias.add_song_alias("__verify_song__", "卷上别名")
+after = sorted(os.listdir(rp.AI_CHAT_DIR))
+print(json.dumps({
+    "ok": ok,
+    "enabled": song_alias.ENABLED,
+    "reply": song_alias.add_alias_reply("__verify_song__", "x"),
+    "untouched": before == after,
+}))
 """,
         {"LIZ_DATA_DIR": str(volp)},
     )
-    check(w["ok"] and w["has"], "add_song_alias 实际写入卷上的 alias.json")
+    check(w["ok"] is False, "add_song_alias 恒返回 False（未写入）")
+    check(w["enabled"] is False, "song_alias.ENABLED 为 False")
+    check(bool(w["reply"]), "add_alias_reply 返回非空文本（空串会被 QQ 接口拒绝）")
+    check(w["untouched"], "别名调用未产生任何文件写入")
 
 print()
 print("=" * 72)
@@ -351,6 +371,199 @@ check(
 
 print()
 print("=" * 72)
+print("H. 别名库 —— 数据在位、能关联上曲库、匹配语义与防劫持")
+print("=" * 72)
+
+# 别名库（yuzuchan_aliases/aliases.json）是 2026-09-23 新增的**运行时依赖**。
+# 它出问题的方式同样是静默的：文件缺失/被 .dockerignore 误伤时，索引为空，
+# /别名查歌 与 /查询别名 只会回一句"没有找到"，而机器人照常启动。
+#
+# 这里顺带把两条**语义契约**钉住（都是照搬柚子 API 的实测行为）：
+#   1. 别名匹配是"大小写不敏感 + 精确"，不是子串 —— 故 '真' 不该命中。
+#   2. BY_ANY 的顺序是 歌名 → ID → 别名 —— 故别名 '9'（属于 302）不得劫持
+#      /song 9（Color My World）。这是别名兜底排在最后的原因。
+ALIAS_PROBE = """
+import json, os, sys
+sys.path.insert(0, os.getcwd())
+from liz_bot import song_query as sq
+from liz_bot.song_paths import ALIASES_JSON
+
+def ids(keyword, kind):
+    # 注意：曲库里的 id 是**字符串**（水鱼返回如此），别直接和 int 比。
+    res = sq.select_song(keyword, kind)
+    return [int(x["song"]["id"]) for x in res] if res else []
+
+print(json.dumps({
+    "path": ALIASES_JSON,
+    "exists": os.path.isfile(ALIASES_JSON),
+    "size": os.path.getsize(ALIASES_JSON) if os.path.isfile(ALIASES_JSON) else 0,
+    "stats": sq.library_stats(),
+    "id_type": type(sq.select_song("8", sq.BY_ID)[0]["song"]["id"]).__name__,
+    "by_alias": ids("会员制餐厅", sq.BY_ALIAS),
+    "by_alias_upper": ids("TRUE LOVE SONG", sq.BY_ALIAS),
+    "substring_probe": ids("真", sq.BY_ALIAS),
+    "by_any_numeric": ids("9", sq.BY_ANY),
+    "by_id_numeric": ids("9", sq.BY_ID),
+    "reply8": sq.alias_reply("8"),
+    "reply_missing": sq.alias_reply("99999"),
+    "not_found": sq.NOT_FOUND,
+}, ensure_ascii=False))
+"""
+
+al = run_probe(ALIAS_PROBE)
+stats = al["stats"]
+
+check(al["exists"], "aliases.json 存在于仓库内", al["path"])
+check(al["size"] > 200_000, f"aliases.json 体积正常（{al['size']:,} 字节）")
+check(al["id_type"] == "str",
+      "曲库 id 是字符串（水鱼如此，比较前必须 _as_int 归一）", al["id_type"])
+check(stats.get("aliases", 0) >= 9000,
+      f"别名条数正常（{stats.get('aliases')} 条）")
+check(stats.get("alias_keys", 0) >= 8000,
+      f"去重后的别名键正常（{stats.get('alias_keys')} 个）")
+check(8 in al["by_alias"],
+      "别名索引可用（'会员制餐厅' → id 8）", str(al["by_alias"]))
+check(al["by_alias_upper"] == [8],
+      "别名匹配大小写不敏感（'TRUE LOVE SONG' → id 8）", str(al["by_alias_upper"]))
+check(al["substring_probe"] == [],
+      "别名是精确匹配而非子串（'真' 不命中 '真爱'）", str(al["substring_probe"]))
+check(al["by_any_numeric"] == [9] and al["by_id_numeric"] == [9],
+      "数字别名不劫持 ID 查询（'9' → Color My World）",
+      f"BY_ANY={al['by_any_numeric']} BY_ID={al['by_id_numeric']}")
+check("会员制餐厅" in al["reply8"],
+      "/查询别名 保持旧文本格式且含真实数据", al["reply8"])
+check(al["reply_missing"] == al["not_found"],
+      "未知 ID 返回统一的未找到文案", al["reply_missing"])
+
+print()
+print("=" * 72)
+print("I. 回复文本 —— 文案来自文件、可热更新、缺失即报错")
+print("=" * 72)
+
+# replies.json 是 2026-09-23 新增的**运行时依赖**：全部用户可见文案都在里面。
+# 它的取向与别的数据文件相反 —— 刻意**不做**静默降级：文件缺失 / JSON 损坏 /
+# 缺键 / 占位符写错一律抛 RepliesError，再由 run.py 变成一行启动错误。
+# 理由：文案文件若静默回退到代码内置默认值，就会出现"改了文件却没生效"
+# 这种最难排查的情况。
+#
+# 注意本段**只断言结构性不变量，不硬编码文案内容** —— 文案本来就是给人随时改的，
+# 把具体字面量写进断言会让"改文案"变成"改测试"。默认文案是否与重构前逐字一致，
+# 由 _tools/test_refactor_equivalence.py 负责把关（它拿原实现做对照）。
+REPLIES_PROBE = """
+import json, os, shutil, sys, tempfile, time
+sys.path.insert(0, os.getcwd())
+from liz_bot import replies
+
+out = {"path": replies.REPLIES_JSON, "exists": os.path.isfile(replies.REPLIES_JSON)}
+out["missing_keys"] = sorted(set(replies._SCHEMA) - set(replies.keys()))
+out["extra_keys"] = sorted(set(replies.keys()) - set(replies._SCHEMA))
+
+# ---- 正常取值：只验"能取到、非空、占位符确实被替换" ----
+out["not_found"] = replies.text("song.not_found")
+out["missing"] = replies.text("song.missing")
+out["none_reply"] = replies.get("bot.none_reply")
+out["greeting"] = replies.text("daily.greeting")
+out["help"] = replies.text("daily.help")
+out["add_failed"] = replies.text("alias.add_failed")
+out["add_bad_params"] = replies.text("alias.add_bad_params")
+out["data_error"] = replies.text("song.data_error")
+out["bad_params"] = replies.text("song.bad_params")
+out["unknown"] = replies.text("router.unknown_command", cmd_name="ZZZTOKEN")
+out["not_command"] = replies.text("bot.not_command", content="ZZZTOKEN")
+out["error"] = replies.text("bot.error", error="ZZZTOKEN")
+out["alias_header"] = replies.text("song.alias_header", aliases=["a", "b"])
+out["format_rendered"] = replies.text(
+    "song.format", title="ZZZTOKEN", artist="ZZZTOKEN", id="ZZZTOKEN",
+    master_ds="ZZZTOKEN", master_charter="ZZZTOKEN",
+    rem_ds="ZZZTOKEN", rem_charter="ZZZTOKEN")
+
+# ---- 报错路径：下面每一条都**必须**抛 RepliesError（不能静默降级）----
+def err(fn):
+    try:
+        fn()
+        return None
+    except replies.RepliesError as exc:
+        return str(exc).splitlines()[0]
+    except Exception as exc:            # 抛错类型不对同样算失败
+        return "<%s>" % type(exc).__name__
+
+good = json.load(open(replies.REPLIES_JSON, encoding="utf-8"))
+tmp = tempfile.mkdtemp(prefix="lizreplies_")
+probe_file = os.path.join(tmp, "replies.json")
+replies.REPLIES_JSON = probe_file
+
+def write(payload):
+    with open(probe_file, "w", encoding="utf-8") as fh:
+        if isinstance(payload, str):
+            fh.write(payload)
+        else:
+            json.dump(payload, fh, ensure_ascii=False)
+
+replies.reload()
+out["err_missing_file"] = err(lambda: replies.text("song.not_found"))
+
+write('{ "song": { "not_found": "x", } }')          # 多余逗号
+out["err_bad_json"] = err(lambda: replies.text("song.not_found"))
+
+no_key = json.loads(json.dumps(good))
+del no_key["song"]["not_found"]
+write(no_key)
+out["err_missing_key"] = err(lambda: replies.text("song.not_found"))
+
+bad_tpl = json.loads(json.dumps(good))
+bad_tpl["song"]["format"] = "标题：{titel}"           # 占位符拼错
+write(bad_tpl)
+out["err_bad_placeholder"] = err(lambda: replies.text("song.not_found"))
+
+# ---- 热更新：改文件后取值应立刻变化 ----
+write(good)
+replies.reload()
+out["hot_before"] = replies.text("song.not_found")
+mod = json.loads(json.dumps(good))
+mod["song"]["not_found"] = "ZZZTOKEN"
+time.sleep(0.05)
+write(mod)
+out["hot_after"] = replies.text("song.not_found")
+
+shutil.rmtree(tmp, ignore_errors=True)
+print(json.dumps(out, ensure_ascii=False))
+"""
+
+rt = run_probe(REPLIES_PROBE)
+
+check(rt["exists"], "replies.json 存在于仓库内", rt["path"])
+check(not rt["missing_keys"], "键齐全（_SCHEMA 声明的键都在）", str(rt["missing_keys"]))
+if rt["extra_keys"]:
+    print(f"        （提示：有 {len(rt['extra_keys'])} 个未使用的键：{rt['extra_keys']}）")
+
+for key in ("not_found", "missing", "greeting", "help", "add_failed",
+            "add_bad_params", "data_error", "bad_params"):
+    check(bool(rt[key]) and isinstance(rt[key], str),
+          f"{key} 可取到且为非空字符串", repr(rt[key]))
+check(isinstance(rt["none_reply"], list) and len(rt["none_reply"]) >= 1,
+      "bot.none_reply 为非空数组", str(rt["none_reply"]))
+
+# 占位符是否真的被替换（只查"替换进去了"，不查外围文案）
+check("ZZZTOKEN" in rt["unknown"], "未知指令模板已替换 cmd_name", rt["unknown"])
+check("ZZZTOKEN" in rt["not_command"], "非指令提示已替换 content", rt["not_command"])
+check("ZZZTOKEN" in rt["error"], "异常提示已替换 error", rt["error"])
+check("'a', 'b'" in rt["alias_header"], "别名头部已替换 aliases", rt["alias_header"])
+check(rt["format_rendered"].count("ZZZTOKEN") == 7,
+      "查歌排版模板的 7 个占位符全部被替换",
+      f"实际出现 {rt['format_rendered'].count('ZZZTOKEN')} 次")
+
+check(bool(rt["err_missing_file"]),
+      "文件缺失时抛 RepliesError（不静默降级）", str(rt["err_missing_file"]))
+check(bool(rt["err_bad_json"]), "JSON 损坏时抛 RepliesError", str(rt["err_bad_json"]))
+check(bool(rt["err_missing_key"]), "缺键时抛 RepliesError", str(rt["err_missing_key"]))
+check(bool(rt["err_bad_placeholder"]),
+      "占位符写错时抛 RepliesError", str(rt["err_bad_placeholder"]))
+check(rt["hot_after"] == "ZZZTOKEN" and rt["hot_before"] != rt["hot_after"],
+      "改文件后取值立刻变化（热更新生效）",
+      f"{rt['hot_before']!r} -> {rt['hot_after']!r}")
+
+print()
+print("=" * 72)
 print("E. 语法编译")
 print("=" * 72)
 
@@ -361,9 +574,12 @@ targets = [
     "liz_bot/song_paths.py",
     "liz_bot/qqgroupbot.py",
     "liz_bot/qqgroup-ai-bot.py",
+    "liz_bot/replies.py",
     "liz_bot/song_alias.py",
     "liz_bot/song_query.py",
+    "liz_bot/command_router.py",
     "liz_bot/command_handler.py",
+    "liz_bot/daily_funcs.py",
 ]
 proc = subprocess.run(
     PY + ["-m", "py_compile", *targets],

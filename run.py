@@ -12,8 +12,8 @@
 
 容器平台额外建议
 ----------------
-``LIZ_DATA_DIR``  指向挂载的持久化卷（如 ``/data``），否则重启会丢别名表；
-                  详见 :mod:`liz_bot.runtime_paths`。
+``LIZ_DATA_DIR``  指向挂载的持久化卷（如 ``/data``），否则重启会丢
+                  日志与会话历史；详见 :mod:`liz_bot.runtime_paths`。
 ``HEALTHZ_PORT``  让容器监听一个端口，避免平台因「无监听端口」判为不健康；
                   详见 :mod:`liz_bot.healthz`。
 """
@@ -21,7 +21,7 @@
 import os
 import sys
 
-from liz_bot import healthz, runtime_paths
+from liz_bot import healthz, replies, runtime_paths
 from liz_bot import qqgroupbot
 from liz_bot.config import ConfigError, load_bot_config
 
@@ -41,7 +41,16 @@ def main() -> None:
     for note in runtime_paths.ensure_dirs():
         print(note)
 
-    # 2. 校验配置。**刻意放在健康检查之前**：配置缺失时应当直接退出并留下
+    # 2. 校验回复文本。**刻意放在配置校验与健康检查之前**：文案文件缺失或
+    #    损坏时全部指令都会失败，宁可在启动日志里一行报错退出，也不要等到
+    #    群里第一条消息才炸。上面打印的「回复文本」那一行就是出错时要改的文件。
+    try:
+        replies.preload()
+    except replies.RepliesError as exc:
+        print(f"启动失败：{exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+    # 3. 校验配置。**刻意放在健康检查之前**：配置缺失时应当直接退出并留下
     #    清晰报错，而不是让容器看起来"健康"却干不了活。
     try:
         config = load_bot_config(LOCAL_CONFIG_YAML)
@@ -50,7 +59,7 @@ def main() -> None:
         print(f"启动失败：{exc}", file=sys.stderr)
         raise SystemExit(1) from None
 
-    # 3. 起健康检查端口（未设置 HEALTHZ_PORT / PORT 时为空操作）
+    # 4. 起健康检查端口（未设置 HEALTHZ_PORT / PORT 时为空操作）
     port = healthz.start()
     if port:
         print(f"健康检查已监听 0.0.0.0:{port}")

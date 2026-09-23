@@ -41,10 +41,16 @@ _tools
 # 它是 pic_haddler 实际读取的目录）
 liz_bot/emoji_gif
 
-# ---------- 曲库数据集中不参与运行的部分 ----------
-# compress/ 是上游预先压缩的副本，本项目只读原始 JSON（ijson 流式解析）
-liz_bot/maimaiDX_songs/compress
-liz_bot/maimaiDX_songs/.github
+# ---------- 只读数据（必须进镜像，别在这里加规则）----------
+# 下面三个目录都随镜像分发，**不要**为它们添加任何排除规则：
+#   liz_bot/divingfish_songs/    曲库（约 900KB）
+#   liz_bot/yuzuchan_aliases/    别名库（约 250KB）
+#   liz_bot/texts/               回复文本（约 1KB）
+#
+# 少了前两个，查歌 / 别名指令会**静默**失效（机器人照常启动、探活照常 200，
+# 只是回一句"没有找到"）；少了 texts/ 更会让启动自检直接报错退出。
+# 尤其别写 `*.json` 这类通配规则 —— 它会把这三份数据一起排除掉。
+# 这几条由 _tools/simulate_container.py 与 verify_deploy_paths.py 把关。
 
 # ---------- 开发与调试杂项 ----------
 .idea

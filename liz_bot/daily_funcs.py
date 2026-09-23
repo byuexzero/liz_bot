@@ -8,11 +8,28 @@
 注：原有的 ``qr_reply``（扫码查询）已**暂时移除**——它是对舞萌服务端的
 发包功能（POST 到 ``ai.sys-allnet.cn``）。恢复步骤见
 ``liz_bot/_已移除功能_舞萌发包.md``。
+
+注：问候语与帮助文案**不再硬编码**，来自 ``liz_bot/texts/replies.json``
+（见 :mod:`liz_bot.replies`）。
 """
 
 import random
 
-HELP_TEXT = "我不知道，问desive哦"
+from liz_bot import replies
+
+#: 历史常量名 → 回复文本键。文案在 ``liz_bot/texts/replies.json``。
+#:
+#: 用模块级 ``__getattr__``（PEP 562）保留 ``daily_funcs.HELP_TEXT`` 这个
+#: 既有常量名，同时让「改文件立刻生效」成立 —— 若写成模块级赋值，
+#: 值会在 import 时被冻结，与 replies 的热更新语义自相矛盾。
+_LEGACY_ALIASES = {"HELP_TEXT": "daily.help"}
+
+
+def __getattr__(name: str) -> str:
+    key = _LEGACY_ALIASES.get(name)
+    if key is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return replies.text(key)
 
 
 def random_int_from_list(param_list: list) -> str:
@@ -46,10 +63,10 @@ def random_int_from_list(param_list: list) -> str:
 
 
 def greeting_reply() -> str:
-    """问候语。"""
-    return "你好呀！我是Liz～"
+    """问候语（文案见 ``replies.json`` 的 ``daily.greeting``）。"""
+    return replies.text("daily.greeting")
 
 
 def help_reply() -> str:
-    """帮助文本。"""
-    return HELP_TEXT
+    """帮助文本（文案见 ``replies.json`` 的 ``daily.help``）。"""
+    return replies.text("daily.help")

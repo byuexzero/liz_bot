@@ -46,7 +46,6 @@ REQUIREMENTS = [
     "pytz>=2025.2",
     "tqdm>=4.67.1",
     "python-dotenv>=1.0.0",
-    "ijson>=3.4.0.post0",
     "aiohttp>=3.13.2",
     "requests>=2.32.5",
     "urllib3>=2.6.2",

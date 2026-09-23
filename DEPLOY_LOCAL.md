@@ -17,7 +17,8 @@ python _tools/local_rehearsal.py
 ```
 
 然后在 QQ 群里 @机器人 发 `/id 8`。**再跑一次同样的命令**，看它是否
-告诉你「卷上已有 alias.json，本次不会覆盖」—— 两次都符合预期，就可以上云了。
+告诉你「卷上已有：ai_chat, bot_log，本次不会覆盖它们」—— 两次都符合预期，
+就可以上云了。
 
 ---
 
@@ -50,16 +51,21 @@ python _tools/local_rehearsal.py --plain
 
 `--plain` 不设任何环境变量，等价于 `python run.py`。
 
-**看什么**：启动后应打印 5 行路径信息，且**没有 traceback**。
+**看什么**：启动后应打印 6 行路径信息，且**没有 traceback**。
 
 ```
 数据来源：仓库内目录（未设 LIZ_DATA_DIR）
-别名表：D:\projectsega\liz_bot\maimaiDX_songs\alias.json
-...
+AI 会话：D:\projectsega\liz_bot\ai_chat
+日志目录：D:\projectsega\bot_log
+曲库基线：D:\projectsega\liz_bot\divingfish_songs
+别名基线：D:\projectsega\liz_bot\yuzuchan_aliases
+回复文本：D:\projectsega\liz_bot\texts
 健康检查已监听 0.0.0.0:...   ← 仅彩排模式才有
 ```
 
-**证明了**：依赖齐全、Python 版本对、配置能加载、路径解析正确。
+**证明了**：依赖齐全、Python 版本对、配置能加载、路径解析正确、
+**回复文本文件可读**（最后一行对应 `texts/replies.json`；文件缺失时会在打印
+这几行**之前**就报错退出，所以只要能看到这 6 行，文案就一定是齐的）。
 
 ### L2 —— 云端配置路径对不对？（**最关键**）
 
@@ -70,10 +76,10 @@ python _tools/local_rehearsal.py
 **看什么**（三件事，缺一不可）：
 
 1. `数据来源：数据卷 ...` —— 而不是"仓库内目录"
-2. `空卷首次启动，已播种基线别名表` —— 空卷会自动播种，否则别名全空
+2. `空卷（首次启动，将创建 ai_chat/ 与 bot_log/）` —— 卷上两处可写目录会被建好
 3. 浏览器打开 `http://localhost:18734/` → `{"status":"ok","bot":"starting"}`
 
-**证明了**：`LIZ_DATA_DIR` 生效、空卷播种正确、探活端口能响应。
+**证明了**：`LIZ_DATA_DIR` 生效、可写目录落在卷上、探活端口能响应。
 
 > `bot` 字段从 `starting` 变 `ready`，说明 WebSocket 已连上腾讯服务器 ——
 > 这同时是**凭据有效 + 网络可达**的证据。本地这一层能看到 `ready`，
@@ -87,16 +93,18 @@ python _tools/local_rehearsal.py
 |---|---|---|
 | 发 `/id 8` | 返回《True Love Song》 | 指令链路 + 曲库完整 |
 | 发 `随便一句话` | 返回「未知指令」而非静默 | 异常分支有回复 |
-| 新增一条别名 | 成功写入 | 写盘路径可写 |
+| 发 `/查询别名 8` | 返回 `歌曲有以下别名：['true love song', '会员制餐厅', ...]` | 别名库完整且已与曲库关联 |
+| 发 `/别名查歌 会员制餐厅` | 返回《True Love Song》 | 别名索引可用（该别名**不是**曲名，只能靠别名命中） |
+| 发 `/别名查歌 TRUE LOVE SONG` | 返回《True Love Song》 | 含空格的别名可用（分发时先试整串，再退回首个词） |
 
 **再跑一次** `python _tools/local_rehearsal.py`，应看到：
 
 ```
-卷上已有 alias.json（361538 字节）→ 本次**不会**覆盖它
+卷上已有：ai_chat, bot_log → 本次**不会**覆盖它们
 ```
 
-**这是全流程里最重要的一条断言**：它证明「用户攒的别名在重启后不丢」。
-云端最容易出的事故就是这一条 —— 容器重启，别名无声消失。
+**这是全流程里最重要的一条断言**：它证明「运行期写入落在卷上、重启后不丢」。
+云端最容易出的事故就是这一条 —— 容器重启，会话历史与日志无声消失。
 
 ---
 

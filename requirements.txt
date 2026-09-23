@@ -24,8 +24,9 @@ pytz>=2025.2                # 接口时间戳需 Asia/Tokyo / Asia/Shanghai 时�
 tqdm>=4.67.1                # maimai/crawler 批量抓取进度条
 python-dotenv>=1.0.0        # 读取 .env（未安装时 maimai.config 会退回内置解析器）
 
-# ---------- 3. 曲库检索 (liz_bot/command_handler.py) ----------
-ijson>=3.4.0.post0          # 流式读取大型 songs.json / alias.json（避免全量载入内存）
+# ---------- 3. 曲库检索 (liz_bot/song_query.py) ----------
+# 无需额外依赖：曲库 music_data.json 由 json.load() 全量载入并建索引。
+# 原先用 ijson 流式解析，重构后已移除（详见 song_query.py 的 _load 说明）。
 
 # ---------- 4. 表情包上传 (liz_bot/pic_haddler.py) ----------
 aiohttp>=3.13.2             # 异步上传媒体到腾讯服务器

@@ -10,6 +10,7 @@ from botpy.message import GroupMessage
 from botpy import logging
 from botpy.ext.command_util import Commands
 from botpy.message import GroupMessage, Message
+from liz_bot import replies
 from liz_bot.command_handler import handle_command, parse_command
 from liz_bot.config import BotConfig, load_bot_config
 from liz_bot.healthz import set_status as set_health_status
@@ -70,8 +71,12 @@ class ExpiringCache:
 
 
 # 机器人核心类
+#
+# 注：本类的全部对外文案（空消息随机回复、非指令提示、异常提示）都来自
+# ``liz_bot/texts/replies.json``，见 :mod:`liz_bot.replies`。原先的
+# ``none_reply`` 类属性已去掉 —— 类属性在 import 时求值并冻结，
+# 改文案不会生效；现在改为每次使用时取值。
 class MyClient(botpy.Client):
-    none_reply = ['干什么！', 'Liz在哦', '宝宝在干嘛？', 'Liz随时待命', 'suki❤', 'Liz is on ready!']
 
     async def on_ready(self):
         _log.info(f"机器人 {self.robot.name} 已就绪！")
@@ -81,7 +86,8 @@ class MyClient(botpy.Client):
     async def on_group_at_message_create(self, message: GroupMessage):
         """监听群聊@消息，解析并处理指令"""
         if message.content.strip() == "":
-            await message.reply(content=random.choice(self.none_reply))
+            # 空消息时的随机回复候选，文案见 replies.json 的 bot.none_reply
+            await message.reply(content=random.choice(replies.get("bot.none_reply")))
         else:
             try:
                 # 1. 解析指令
@@ -90,7 +96,8 @@ class MyClient(botpy.Client):
                 # 2. 处理解析结果
                 if not is_valid:
                     # 非/开头的消息，返回"未知的指令"
-                    await message.reply(content=f"未知指令：“{message.content}”")
+                    await message.reply(content=replies.text(
+                        "bot.not_command", content=message.content))
                 else:
                     # 解析成功，分发到指令处理器
                     a = await handle_command(cmd_name, cmd_params)
@@ -101,7 +108,7 @@ class MyClient(botpy.Client):
                 await self.api.post_group_message(
                     group_openid=message.group_openid,
                     msg_type=0,
-                    content=f"处理失败：{str(e)[:20]}..."
+                    content=replies.text("bot.error", error=str(e)[:20]),
                 )
 
 

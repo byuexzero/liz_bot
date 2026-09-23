@@ -15,7 +15,7 @@
 # liz_bot/runtime_paths.py 与 liz_bot/healthz.py 的模块文档。
 # =============================================================================
 
-# 固定在 3.10：qq-botpy 与 ijson 目前只在 3.10 上验证过。
+# 固定在 3.10：qq-botpy 目前只在 3.10 上验证过。
 # requirements.txt 标注的支持区间是 3.10–3.12，此处取已验证的下界。
 FROM python:3.10-slim
 
@@ -55,7 +55,7 @@ COPY . .
 RUN mkdir -p /data
 
 # 刻意以 root 运行：平台挂载的卷通常属 root，换成非 root 用户会写不进去，
-# 而写不进去的后果是别名表静默丢失（见 liz_bot/runtime_paths.py）。
+# 而写不进去的后果是日志与会话历史静默丢失（见 liz_bot/runtime_paths.py）。
 #
 # 刻意不写 HEALTHCHECK：容器是否监听端口取决于 HEALTHZ_PORT 是否设置，
 # 写死一个健康检查会在未启用该端口时把健康的容器判成不健康、反复重启。

@@ -65,13 +65,18 @@ eaquira-master/
 # ==========================================================================
 # _tools/ 内含类型转换器与各套验证脚本，属开发期工具，不随项目分发。
 #
-# 例外：四个**部署自检脚本**随仓库分发。它们的共同点是能在部署前发现问题，
-# 而对应的问题在运行时表现为"静默丢数据"或"容器起来才炸"，极难排查：
+# 例外：六个脚本随仓库分发。前四个是**部署自检脚本**，它们的共同点是能在
+# 部署前发现问题，而对应的问题在运行时表现为"静默丢数据"或"容器起来才炸"，
+# 极难排查：
 #   verify_deploy_paths.py   持久化卷与 LIZ_DATA_DIR 是否配对
 #   simulate_container.py    .dockerignore 有没有误伤运行必需文件
 #   check_wheels.py          依赖在 linux/amd64 上是否需要源码编译
 #   local_rehearsal.py       用「云端的方式」在本地跑一遍（卷 + 探活端口）
-# 详见 DEPLOY_CLAWCLOUD.md / DEPLOY_LOCAL.md。
+# 详见 DEPLOY_CN.md / DEPLOY_LOCAL.md。
+#
+# 后两个是**数据更新脚本** —— 曲库与别名库都需要人工更新，脚本必须能拿到：
+#   fetch_music_data.py      从水鱼拉取完整乐曲信息到本地
+#   fetch_aliases.py         从柚子拉取完整歌曲别名到本地
 #
 # 注意必须写成 `_tools/*` 而不是 `_tools/`：Git 无法在**目录被整体排除**时
 # 反排除其中的文件，只能"排除目录内容 + 单独放行文件"。
@@ -80,6 +85,8 @@ _tools/*
 !_tools/simulate_container.py
 !_tools/check_wheels.py
 !_tools/local_rehearsal.py
+!_tools/fetch_music_data.py
+!_tools/fetch_aliases.py
 
 # 本地彩排产生的数据卷（local_rehearsal.py 的默认卷目录）—— 不上传
 .local_volume/
@@ -90,25 +97,48 @@ _tools/*
 _backup/
 
 # ==========================================================================
-# 素材与数据 —— 不上传
+# 素材与数据
 # ==========================================================================
 # 表情包 GIF（约 34MB）与 PNG（约 1MB）。体积大、非代码，
 # 克隆后自行补齐即可，机器人缺了它们只是少几个表情指令。
 liz_bot/emoji_gif/
 liz_bot/emoji/
 
-# 歌曲数据库（songs.json 约 1MB + alias.json 约 350KB）**随仓库分发**：
-# 查歌是核心功能，缺了它 /id、/bm、/song、/name 等指令全部不可用。
-# 上游 maimaiDX-songs 为第三方数据集，授权说明见根目录 README.md。
-# 注意：此处刻意不再忽略 liz_bot/maimaiDX_songs/ 本身。
+# 歌曲数据库（music_data.json 约 900KB）**随仓库分发**：
+# 查歌是核心功能，缺了它 /id、/song、/name 等指令全部不可用。
+# 数据源为水鱼（diving-fish）公开接口，由 _tools/fetch_music_data.py 拉取。
+# 注意：此处刻意**不**忽略 liz_bot/divingfish_songs/ 本身。
 #
-# 但该目录下有两类内容不随仓库分发：
-#   .github/   上游数据集自己的 CI 配置。本项目代码从不读取，且它引用的是
-#              上游仓库的 GH_PAT secret，与本项目无关（嵌套 workflows 也不会被执行）。
-#   compress/  上游预先压缩好的 JSON 副本（约 380KB）。本项目只读原始 JSON，
-#              `song_query.py` 走的是 ijson 流式解析，用不到这些 .zlib。
-liz_bot/maimaiDX_songs/.github/
-liz_bot/maimaiDX_songs/compress/
+# 只有 ETag 缓存不随仓库分发 —— 它是本机增量更新用的，换台机器就该重新协商。
+liz_bot/divingfish_songs/*.etag
+
+# 别名库（aliases.json 约 250KB）同样**随仓库分发**：
+# /别名查歌、/查询别名、/cbm 以及 /song 的别名兜底都依赖它，
+# 缺了它这些指令会静默返回"没有找到"。
+#
+# 数据源为柚子（yuzuchan）公开接口，由 _tools/fetch_aliases.py 拉取 ——
+# 水鱼**不提供**歌曲别名，别名由柚子单独维护（玩家众包投票产生）。
+# 同样刻意**不**忽略 liz_bot/yuzuchan_aliases/ 本身。
+#
+# 注意：柚子不发 ETag / Last-Modified，协商式缓存对它无效（实测），
+# 所以 .etag 基本不会生成；fetch_aliases.py 改用"内容一致即不改写"
+# 来保证重复拉取无副作用。这条规则留着以防上游日后补上 ETag。
+liz_bot/yuzuchan_aliases/*.etag
+
+# 回复文本（texts/replies.json，约 1KB）同样**随仓库分发**：
+# 全部用户可见文案（未找到、未知指令、帮助、问候、查歌排版模板……）都在这里，
+# 改文案不用碰代码。缺了它机器人**起不来** —— 启动自检会直接报错退出
+# （刻意不内置代码兜底，避免"改了文件却没生效"）。
+#
+# 注意它**不在** liz_bot/config/ 下：config/ 的 yaml 被排除（只放行
+# *.example.yaml），而文本文件必须随仓库与镜像分发。
+# 同样刻意**不**忽略 liz_bot/texts/ 本身，也**不要**加 `*.json` 这类通配规则。
+# （本目录没有 ETag 缓存，所以这里没有对应的忽略行 —— 是刻意的，不是漏写。）
+
+# 旧曲库数据集（maimaiDX-songs）与旧别名表（alias.json）已于 2026-09-23
+# 整体归档到 _backup/，liz_bot/maimaiDX_songs/ 已不存在，
+# 因此这里不再需要针对该目录的任何忽略规则。
+# 归档说明（含回退步骤）见 _backup/liz_bot_song_db_2026-09-23/README.md。
 
 # ==========================================================================
 # AI 工作区数据

@@ -1,0 +1,33 @@
+{
+  "song": {
+    "not_found": "Liz没有找到这样的歌",
+    "missing": " -",
+    "data_error": "DataError",
+    "bad_params": "笨蛋是不是没写参数啊",
+    "alias_header": "歌曲有以下别名：{aliases}",
+    "format": "\n乐曲名称：{title} \n曲师：{artist} \nid：{id} \nmaster难度：{master_ds} \nma谱师：{master_charter} \nre:master难度：{rem_ds} \nrem谱师：{rem_charter}"
+  },
+  "router": {
+    "unknown_command": "未知指令：{cmd_name}"
+  },
+  "daily": {
+    "help": "我不知道，问desive哦",
+    "greeting": "你好呀！我是Liz～"
+  },
+  "alias": {
+    "add_failed": "添加失败，找不到歌曲或别名已存在！",
+    "add_bad_params": "笨蛋传错参数了呢..."
+  },
+  "bot": {
+    "none_reply": [
+      "干什么！",
+      "Liz在哦",
+      "宝宝在干嘛？",
+      "Liz随时待命",
+      "suki❤",
+      "Liz is on ready!"
+    ],
+    "not_command": "未知指令：“{content}”",
+    "error": "处理失败：{error}..."
+  }
+}

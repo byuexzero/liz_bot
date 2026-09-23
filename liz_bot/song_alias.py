@@ -1,85 +1,66 @@
-"""歌曲别名管理 —— 向 alias.json 添加别名。
+"""歌曲别名管理 —— **已暂时移除实现，仅保留接口**。
 
-主要对外接口：
-    add_song_alias(song_name, new_alias, alias_file_path)
-    add_alias_reply(keyword, new_alias)   指令层封装，直接产出回复文本
+为什么是空实现
+--------------
+别名功能原本把用户新增的别名写进 ``liz_bot/maimaiDX_songs/alias.json``。
+查歌切换到水鱼（diving-fish）曲库后，该曲库**不含任何别名数据**，
+别名检索已无从建立，因此按重构计划「暂时删除、不做重构」。
+
+本模块保留同名接口与同名常量，使 ``command_router`` / ``command_handler``
+的调用点无需改动（即「返回空数据以适配」）。所有函数都不再读写磁盘。
+
+注意 ``add_alias_reply`` 返回的是 ``alias.add_failed`` 的文案而**不是空字符串**：
+``qqgroupbot`` 会把回复原样交给 ``message.reply(content=...)``，
+空字符串会被 QQ 接口拒绝，反而变成报错。
+
+文案位置
+--------
+本模块的提示文案**不再硬编码**，来自 ``liz_bot/texts/replies.json``
+（键 ``alias.add_failed`` / ``alias.add_bad_params``，见 :mod:`liz_bot.replies`）。
+
+恢复步骤
+--------
+原始实现（103 行，含 alias.json 的读写与去重）与数据文件
+``alias.json``（361538 字节）都已归档到::
+
+    _backup/liz_bot_song_db_2026-09-23/
+
+详见该目录的 ``README.md``。恢复时需要一并恢复 ``runtime_paths.ALIAS_JSON``
+与 ``ensure_dirs()`` 里的空卷播种逻辑。
 """
 
-import json
-import os
+from liz_bot import replies
 
-from liz_bot.song_paths import ALIAS_JSON
-from liz_bot.song_query import NOT_FOUND, query_any
+#: 历史常量名 → 回复文本键。文案在 ``liz_bot/texts/replies.json``。
+#:
+#: 用模块级 ``__getattr__``（PEP 562）保留 ``ADD_FAILED`` / ``ADD_BAD_PARAMS``
+#: 这两个既有常量名（``command_router`` 在用 ``ADD_BAD_PARAMS``，
+#: 部署自检脚本会读 ``ENABLED``），同时让改文件后取值立刻生效。
+_LEGACY_ALIASES = {
+    "ADD_FAILED": "alias.add_failed",
+    "ADD_BAD_PARAMS": "alias.add_bad_params",
+}
 
-# 添加失败时的统一提示
-ADD_FAILED = "添加失败，找不到歌曲或别名已存在！"
-ADD_BAD_PARAMS = "笨蛋传错参数了呢..."
+
+def __getattr__(name: str) -> str:
+    key = _LEGACY_ALIASES.get(name)
+    if key is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return replies.text(key)
 
 
-def add_song_alias(song_name: str, new_alias: str, alias_file_path=ALIAS_JSON):
+#: 别名功能当前是否可用。调用方可用它决定是否展示相关提示。
+ENABLED = False
+
+
+def add_song_alias(song_name: str, new_alias: str, alias_file_path=None) -> bool:
+    """**已暂时移除实现** —— 不做任何写入，恒返回 ``False``。
+
+    签名与原实现保持一致，使既有调用点（含部署自检脚本）无需改动。
+
+    :return: 恒为 ``False``（表示未添加成功）
     """
-    给alias.json文件添加字符串别名到原有alias列表中（不改变列表结构，自动去重）
-    第一版路径参数：手动传入alias.json完整路径，兼容原有JSON结构
-    :param alias_file_path: alias.json文件的完整路径（如 "maimaiDX_songs/alias.json"）
-    :param song_name: 歌曲名（需与JSON中的name格式一致，如 "\"411Ψ892\""）
-    :param new_alias: 要添加的单个别名（字符串类型，如 "新别名114"）
-    :return: 布尔值，True表示添加成功，False表示失败
-    """
-    # 步骤1：参数校验（确保新别名是非空字符串，避免无效数据）
-    if not isinstance(new_alias, str) or len(new_alias.strip()) == 0:
-        print("错误：新别名必须是非空字符串！")
-        return False
-    new_alias = new_alias.strip()  # 去除首尾空白，避免无效空格存入列表
-
-    # 步骤2：读取现有alias.json数据（兼容文件不存在/格式校验）
-    song_alias_list = []
-    if os.path.exists(alias_file_path):
-        try:
-            with open(alias_file_path, 'r', encoding='utf-8') as f:
-                song_alias_list = json.load(f)
-            # 校验数据格式：必须是列表（兼容原有JSON结构）
-            if not isinstance(song_alias_list, list):
-                print("错误：alias.json文件格式无效，必须是JSON列表！")
-                return False
-        except Exception as e:
-            print(f"错误：读取alias.json失败 - {e}")
-            return False
-
-    # 步骤3：判断歌曲是否存在，将字符串别名添加到alias列表（不改变列表结构）
-    song_exists = False
-    for item in song_alias_list:
-        # 严格匹配歌曲名，避免误修改
-        if item.get("name") == song_name:
-            song_exists = True
-            # 确保alias字段是列表（兼容原有结构，防止异常）
-            existing_alias_list = item.get("alias", [])
-            if not isinstance(existing_alias_list, list):
-                existing_alias_list = []  # 若意外不是列表，强制转为列表，保证结构一致
-
-            # 去重：仅当列表中不存在该字符串别名时，才添加（避免冗余）
-            if new_alias not in existing_alias_list:
-                existing_alias_list.append(new_alias)  # 字符串别名入列表，不改变列表结构
-            # 更新原有alias列表
-            item["alias"] = existing_alias_list
-            break  # 找到对应歌曲，退出循环
-
-    # 步骤4：若歌曲不存在，新增条目（alias仍为列表，仅包含该字符串别名）
-    if not song_exists:
-        new_song_item = {
-            "name": song_name,
-            "alias": [new_alias]  # 保持alias为列表结构，存入单个字符串别名
-        }
-        song_alias_list.append(new_song_item)
-
-    # 步骤5：写入文件（保留原有格式，不破坏结构）
-    try:
-        with open(alias_file_path, 'w', encoding='utf-8') as f:
-            json.dump(song_alias_list, f, ensure_ascii=False, indent=2)
-        print(f"成功！字符串别名「{new_alias}」已添加到歌曲「{song_name}」的alias列表中")
-        return True
-    except Exception as e:
-        print(f"错误：写入alias.json失败 - {e}")
-        return False
+    return False
 
 
 # ---------------- 以下为指令层封装 ----------------
@@ -87,17 +68,8 @@ def add_song_alias(song_name: str, new_alias: str, alias_file_path=ALIAS_JSON):
 def add_alias_reply(keyword: str, new_alias: str) -> str:
     """添加别名指令的回复入口。
 
-    :param keyword: 用于定位歌曲的关键词（混合检索）
-    :param new_alias: 要添加的别名
-    :return: 回复文本
+    **已暂时移除实现**，恒返回 ``alias.add_failed`` 的文案。
+
+    :return: ``replies.json`` 中 ``alias.add_failed`` 的值（保证非空）
     """
-    try:
-        matched = query_any(keyword)
-        if not matched:
-            return ADD_FAILED
-        song_name = matched[0]['song']['name']
-        if not song_name or not add_song_alias(song_name, new_alias):
-            return ADD_FAILED
-        return f"别名{new_alias}添加已添加到歌曲{song_name}"
-    except (IndexError, TypeError):
-        return ADD_BAD_PARAMS
+    return replies.text("alias.add_failed")

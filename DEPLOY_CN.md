@@ -45,8 +45,9 @@
 一年 ¥38 的轻量服务器比"免费但可能下个月就没了"的额度更省心 ——
 这不是价格比较，是风险比较。
 
-> 好在本项目除 `alias.json` 外没有任何状态，换平台 = 改几个环境变量 +
-> 拷一个文件。这个"说走就走"的能力是设计时刻意保留的，见
+> 好在本项目没有任何需要长期保存的业务状态 —— 曲库随镜像分发且只读，
+> 运行期只往卷上写日志与会话历史，换平台 = 改几个环境变量。
+> 这个"说走就走"的能力是设计时刻意保留的，见
 > [`DEPLOY_PAAS.md`](DEPLOY_PAAS.md) 第 0 节。
 
 ---
@@ -257,16 +258,13 @@ sudo systemctl restart liz-bot
 
 ---
 
-## 5. ⚠️ VPS 上的一个坑：`alias.json` 会让 `git pull` 冲突
+## 5. `LIZ_DATA_DIR`：曾经必设，现在只是建议
 
-**这是从容器平台迁到 VPS 时最容易踩的坑，务必看。**
+**2026-09-23 之前，这一节是个真正的坑；现在这个坑已经填掉了。**
 
-别名表默认写在 `liz_bot/maimaiDX_songs/alias.json`，而这个文件
-**是被 git 跟踪的**（随仓库分发的基线）。
-
-在容器平台上这不是问题 —— 你会设 `LIZ_DATA_DIR` 指向卷。
-但 VPS 上「整个磁盘都是持久的」，很容易觉得没必要设，
-于是机器人持续往这个**被跟踪的文件**里写用户新增的别名：
+旧版把用户新增的歌曲别名写在 `liz_bot/maimaiDX_songs/alias.json`，
+而这个文件**是被 git 跟踪的**。VPS 上「整个磁盘都是持久的」，很容易觉得
+没必要设 `LIZ_DATA_DIR`，于是机器人持续往这个**被跟踪的文件**里写别名：
 
 ```
 $ git pull
@@ -274,18 +272,24 @@ error: Your local changes to the following files would be overwritten by merge:
         liz_bot/maimaiDX_songs/alias.json
 ```
 
-**修法：VPS 上也照样设 `LIZ_DATA_DIR`**，把可写数据挪到仓库外面：
+**现在不会再有这个冲突了**：曲库与别名库都改为**只读**（曲库来自水鱼
+`divingfish_songs/music_data.json`，别名来自柚子
+`yuzuchan_aliases/aliases.json`，均随镜像分发），歌曲别名的**写入**功能
+已停用，运行期**不再修改仓库内任何文件**。
+
+设 `LIZ_DATA_DIR` 仍然**推荐**，但理由从"避免 `git pull` 冲突"
+变成了"让仓库目录只含代码"：
 
 ```bash
 export LIZ_DATA_DIR=/var/lib/liz_bot
 ```
 
-这样 `alias.json`、`ai_chat/`、`bot_log/` 都落在 `/var/lib/liz_bot`，
-仓库始终保持干净，`git pull` 永远不会冲突。
+这样 `ai_chat/`、`bot_log/` 都落在 `/var/lib/liz_bot`，
+仓库不会被日志撑大，也便于单独备份。
 
 > 这正是当初设计 `LIZ_DATA_DIR` 时想要的抽象 —— 它解决的**不只是**
 > "容器文件系统是临时的"，而是"**可写数据不该和代码混在一起**"。
-> VPS 场景下这条理由依然成立。
+> VPS 场景下这条理由依然成立，只是从"必须"降级为"建议"。
 
 ---
 
@@ -293,10 +297,10 @@ export LIZ_DATA_DIR=/var/lib/liz_bot
 
 从本地/容器迁到 VPS：
 
-- [ ] 设 `LIZ_DATA_DIR=/var/lib/liz_bot`（第 5 节）
+- [ ] 设 `LIZ_DATA_DIR=/var/lib/liz_bot`（第 5 节，建议项）
 - [ ] 凭据放 `/etc/liz-bot.env`，权限 `600`（不要用 `Environment=`）
 - [ ] 确认机器人**只在一处运行**（QQ 机器人不能两处同时在线）
-- [ ] 如果之前跑过容器版，把卷里的 `alias.json` 拷过来，否则别名会"消失"
+- [ ] 如果之前跑过容器版，把卷里的 `ai_chat/`、`bot_log/` 拷过来（可选，仅为保留历史）
 - [ ] `systemctl enable` 确保开机自启
 - [ ] 群里发 `/id 8` 确认在线
 

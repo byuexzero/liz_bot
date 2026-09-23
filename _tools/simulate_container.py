@@ -21,7 +21,25 @@ Docker 用的是 Go 的 filepath.Match,与 shell 通配略有差异。本脚本�
 **覆盖本项目实际写法**的近似匹配(精确路径 / 目录前缀 / 目录名 / 通配 / `!` 反排除,
 后匹配者胜)。模式变复杂时应重新审视这里。
 
-    python _tools/simulate_container.py
+提交前验证
+----------
+默认模拟的是 `HEAD`(平台会拉到的那份),所以**未提交的改动它看不到** ——
+而"改完 .dockerignore / 新增数据文件,想先验一遍"恰恰是最需要它的时刻。
+
+解法:造一个**悬空 commit**(不移动分支、不动工作区,跑完即弃)再喂给 `--ref`::
+
+    git add -A
+    TREE=$(git write-tree)
+    TMP=$(git commit-tree "$TREE" -p HEAD -m "simulate tmp")
+    git reset                    # 只重置索引,取消暂存,回到原状
+    python _tools/simulate_container.py --ref "$TMP"
+
+`git commit-tree` 只写对象、不移动任何分支;`git reset`(不带 `--hard`)
+只重置索引 —— 工作区内容自始至终未被改动。那个临时 commit 无人引用,
+之后会被 gc 自动回收。
+
+    python _tools/simulate_container.py              # 模拟 HEAD(默认)
+    python _tools/simulate_container.py --ref <sha>  # 模拟指定版本
 """
 
 from __future__ import annotations
@@ -41,7 +59,7 @@ REPO = Path(__file__).resolve().parent.parent
 
 
 def _detect_python() -> list[str]:
-    """挑一个能 ``import ijson, botpy`` 的解释器(查歌链路需要 ijson)。"""
+    """挑一个能 ``import botpy`` 的解释器(查歌链路所需的第三方依赖)。"""
     cands: list[list[str]] = [[sys.executable]]
     if shutil.which("py"):
         cands += [["py", v] for v in ("-3.10", "-3.12", "-3.13")]
@@ -54,7 +72,7 @@ def _detect_python() -> list[str]:
             cands += [[str(exe)] for exe in sorted(root.glob("Python3*/python.exe"))]
     for cand in cands:
         try:
-            proc = subprocess.run(cand + ["-c", "import ijson, botpy"],
+            proc = subprocess.run(cand + ["-c", "import botpy"],
                                   capture_output=True, timeout=90)
         except (OSError, subprocess.SubprocessError):
             continue
@@ -111,9 +129,9 @@ def is_excluded(rel: str, pats: list[tuple[bool, str]]) -> bool:
 
 # ------------------------------------------------------------------- 取仓库内容
 
-def export_head(dest: Path) -> list[str]:
-    """把 HEAD 的内容解到 dest,返回相对路径列表。"""
-    out = subprocess.run(["git", "archive", "--format=tar", "HEAD"],
+def export_ref(dest: Path, ref: str) -> list[str]:
+    """把 ref 的内容解到 dest,返回相对路径列表。"""
+    out = subprocess.run(["git", "archive", "--format=tar", ref],
                          cwd=str(REPO), capture_output=True, check=True).stdout
     with tarfile.open(fileobj=io.BytesIO(out)) as tf:
         try:
@@ -126,12 +144,12 @@ def export_head(dest: Path) -> list[str]:
     )
 
 
-def main() -> None:
+def main(ref: str = "HEAD") -> None:
     print(f"解释器:{' '.join(PY)}")
     print(f"仓库根:{REPO}")
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(REPO),
+    head = subprocess.run(["git", "rev-parse", ref], cwd=str(REPO),
                           capture_output=True, text=True, check=True).stdout.strip()
-    print(f"HEAD  :{head}(已推送的那份内容)")
+    print(f"版本  :{head}({ref}{'，已推送的那份内容' if ref == 'HEAD' else ''})")
     print()
 
     pats = load_dockerignore(REPO / ".dockerignore")
@@ -140,7 +158,7 @@ def main() -> None:
         img = Path(tmp) / "image"
         img.mkdir()
 
-        tracked = export_head(img)
+        tracked = export_ref(img, ref)
         print("=" * 72)
         print(f"A. 取出仓库内容:{len(tracked)} 个文件")
         print("=" * 72)
@@ -183,10 +201,16 @@ def main() -> None:
             "liz_bot/song_query.py",
             "liz_bot/song_alias.py",
             "liz_bot/song_paths.py",
+            "liz_bot/replies.py",
             "liz_bot/pic_haddler.py",
             "liz_bot/text.py",
-            "liz_bot/maimaiDX_songs/songs.json",
-            "liz_bot/maimaiDX_songs/alias.json",
+            "liz_bot/divingfish_songs/music_data.json",
+            # 别名库与曲库同理：缺了它 /别名查歌、/查询别名、/cbm
+            # 会静默返回"没有找到"，而容器本身照常启动 —— 典型的静默丢数据。
+            "liz_bot/yuzuchan_aliases/aliases.json",
+            # 回复文本：缺了它**启动就会失败**（run.py 会先 preload 并报错退出），
+            # 属于 fail-fast，不会静默降级 —— 但也正因为如此，少了它容器起不来。
+            "liz_bot/texts/replies.json",
             "liz_bot/config/config.example.yaml",
             "liz_bot/config/bot-config.example.yaml",
             "liz_bot/config/ai_config.example.yaml",
@@ -195,17 +219,29 @@ def main() -> None:
         check(not missing, f"{len(required)} 个必需文件全部在镜像内",
               ("缺失:" + ", ".join(missing)) if missing else "")
 
+        # 下面这条**不依赖 HEAD**：直接拿 .dockerignore 的规则去匹配只读数据
+        # 文件。上面那条是基于 git 内容的，只有当文件**已提交**时才看得见；
+        # 万一有人加了 `*.json` 或 `liz_bot/*` 这类规则，数据会被静默排除出
+        # 镜像（机器人照常启动，只是查歌/别名全部"没有找到"），这条能立刻抓住。
+        for rel in ("liz_bot/divingfish_songs/music_data.json",
+                    "liz_bot/yuzuchan_aliases/aliases.json",
+                    "liz_bot/texts/replies.json"):
+            check(not is_excluded(rel, pats), f".dockerignore 未排除 {rel}")
+
         # --------------------------------------------------- 不该有的必须没有
         print()
         print("=" * 72)
         print("D. 敏感/无用内容必须不进镜像")
         print("=" * 72)
 
+        # 注意 liz_bot/maimaiDX_songs 是**故意保留**的哨兵：该旧曲库已于
+        # 2026-09-23 归档到 _backup/，.dockerignore 里针对它的排除规则也已
+        # 删除。若哪天它被重新放回仓库，就会漏进镜像并被下面这条检查抓住。
+        # （liz_bot/divingfish_songs 则**必须**在镜像内，不在本列表里。）
         forbidden_dirs = [
             "_backup", "legacy_sdgb_stack", "legacy_qqbot_stack",
             "_tools", "bot_log", ".git", "__pycache__", "liz_bot/emoji_gif",
-            "liz_bot/ai_chat", "liz_bot/maimaiDX_songs/compress",
-            "liz_bot/maimaiDX_songs/.github",
+            "liz_bot/ai_chat", "liz_bot/maimaiDX_songs",
         ]
         leaked = [
             k for k in kept
@@ -236,6 +272,25 @@ def main() -> None:
         env = {k: v for k, v in os.environ.items()
                if k not in ("QQ_BOT_APPID", "QQ_BOT_SECRET",
                             "LIZ_DATA_DIR", "HEALTHZ_PORT", "PORT")}
+
+        # E0: 回复文本缺失时必须**明确报错退出**，而不是静默降级。
+        #     这是 replies.json 的 fail-fast 契约(见 liz_bot/replies.py)——
+        #     刻意不在代码里留一份兜底文案，否则会出现"改了文件却没生效"
+        #     这种最难查的情况。把文件挪走跑一次入口，跑完立刻还原。
+        replies_file = img / "liz_bot" / "texts" / "replies.json"
+        stashed = replies_file.with_name("replies.json.bak")
+        replies_file.rename(stashed)
+        try:
+            proc0 = subprocess.run(PY + ["run.py"], cwd=str(img), env=env,
+                                   capture_output=True, text=True, timeout=120)
+            check(proc0.returncode == 1,
+                  "回复文本缺失时退出码为 1", f"实际 {proc0.returncode}")
+            check("回复文本文件不存在" in proc0.stderr,
+                  "缺失时打印清晰提示而非 traceback", proc0.stderr.strip()[:160])
+            check("Traceback" not in proc0.stderr, "缺失时 stderr 无 Traceback")
+        finally:
+            stashed.rename(replies_file)
+
         proc = subprocess.run(PY + ["run.py"], cwd=str(img), env=env,
                               capture_output=True, text=True, timeout=120)
         check(proc.returncode == 1,
@@ -244,7 +299,7 @@ def main() -> None:
               "打印的是清晰中文错误而非 traceback", proc.stderr.strip()[:160])
         check("Traceback" not in proc.stderr, "stderr 无 Traceback")
 
-        # E2: 设 LIZ_DATA_DIR 后应识别为数据卷并播种
+        # E2: 设 LIZ_DATA_DIR 后应识别为数据卷并把可写目录建在卷上
         vol = Path(tmp) / "vol"
         env2 = dict(env)
         env2["LIZ_DATA_DIR"] = str(vol)
@@ -252,15 +307,15 @@ def main() -> None:
 import json, os, sys
 sys.path.insert(0, os.getcwd())
 from liz_bot import runtime_paths as rp
-from liz_bot.song_paths import ALIAS_JSON, SONG_FILE_PATH
+from liz_bot.song_paths import SONG_FILE_PATH
 notes = rp.ensure_dirs()
 print(json.dumps({
     "volume_backed": rp.is_volume_backed(),
-    "alias": ALIAS_JSON,
+    "ai_chat": rp.AI_CHAT_DIR,
+    "log_dir": rp.LOG_DIR,
     "song_dir": SONG_FILE_PATH,
-    "seeded": os.path.exists(ALIAS_JSON),
-    "seed_ok": os.path.exists(ALIAS_JSON) and
-               os.path.getsize(ALIAS_JSON) == os.path.getsize(rp.BASELINE_ALIAS_JSON),
+    "ai_chat_on_vol": os.path.isdir(rp.AI_CHAT_DIR),
+    "log_on_vol": os.path.isdir(rp.LOG_DIR),
     "notes": notes,
 }))
 """
@@ -271,26 +326,42 @@ print(json.dumps({
         else:
             d = json.loads(proc.stdout.strip().splitlines()[-1])
             check(d["volume_backed"], "识别为数据卷")
-            check(str(d["alias"]).startswith(str(vol)), "ALIAS_JSON 落在卷上", d["alias"])
-            check(d["song_dir"].endswith("maimaiDX_songs"), "曲库基线仍在镜像内")
-            check(d["seeded"] and d["seed_ok"], "基线别名表已播种到卷且大小一致")
+            check(str(d["ai_chat"]).startswith(str(vol)), "AI_CHAT_DIR 落在卷上", d["ai_chat"])
+            check(str(d["log_dir"]).startswith(str(vol)), "LOG_DIR 落在卷上", d["log_dir"])
+            check(d["song_dir"].endswith("divingfish_songs"), "曲库基线仍在镜像内")
+            check(d["ai_chat_on_vol"] and d["log_on_vol"], "可写目录已在卷上创建")
 
-        # E3: 查歌链路端到端(证明 songs.json 完整 + ijson 可用)
+        # E3: 查歌链路端到端(证明 music_data.json 完整 + 索引可用)
         # 注意 handle_command 是 **async** 的 —— 直接调用只会拿到协程对象,
         # 不 await 的话所有断言都会"通过"(协程的 repr 里当然不含"没有找到"),
         # 属于典型的假通过。必须 asyncio.run。
+        #
+        # 别名三例是 2026-09-23 新增的:别名库 aliases.json 是**新的运行时
+        # 依赖**,而它缺失时的表现同样是静默的(返回"没有找到")。
+        # 特意挑了两个非曲名别名:
+        #   * "会员制餐厅"  —— 纯别名命中(曲名里没有这两个字),证明别名索引真的加载了
+        #   * "TRUE LOVE SONG" —— 含空格,走 command_router 的整串优先路径
         probe2 = """
 import asyncio, json, os, sys
 sys.path.insert(0, os.getcwd())
 from liz_bot.command_handler import handle_command
 
+CASES = (
+    ("id", "id", ["8"]),
+    ("random", "random", []),
+    ("nosuchcmd", "nosuchcmd", []),
+    ("bm_alias", "bm", ["会员制餐厅"]),
+    ("bm_multiword", "bm", ["TRUE LOVE SONG"]),
+    ("cbm", "cbm", ["8"]),
+)
+
 async def main():
     out = {}
-    for name, params in (("id", ["8"]), ("random", []), ("nosuchcmd", [])):
+    for key, name, params in CASES:
         try:
-            out[name] = str(await handle_command(name, params))[:60]
+            out[key] = str(await handle_command(name, params))[:160]
         except Exception as e:
-            out[name] = f"<{type(e).__name__}: {e}>"
+            out[key] = f"<{type(e).__name__}: {e}>"
     return out
 
 print(json.dumps(asyncio.run(main()), ensure_ascii=False))
@@ -305,6 +376,17 @@ print(json.dumps(asyncio.run(main()), ensure_ascii=False))
             check("没有找到" not in r["id"], "查歌命中真实曲目(曲库完整)", r["id"])
             check(not r["random"].startswith("<"), "随机数指令正常", r["random"])
             check(r["nosuchcmd"] != "", "未知指令有回复而非静默", r["nosuchcmd"])
+
+            # 别名链路 —— 数据缺失时这里会返回"没有找到",而容器照样起得来
+            # 断言用 "id：8" 而不是曲名:别名 '会员制餐厅' 同时挂在 8 和 67 上,
+            # 曲名会随索引顺序变,id 才是这条用例真正要钉的东西。
+            check(not r["bm_alias"].startswith("<"), "别名查歌 /bm 无异常", r["bm_alias"])
+            check("没有找到" not in r["bm_alias"] and "id：8" in r["bm_alias"],
+                  "别名库完整(纯别名 '会员制餐厅' 命中 id 8)", r["bm_alias"])
+            check("没有找到" not in r["bm_multiword"] and "id：8" in r["bm_multiword"],
+                  "含空格的别名可用(router 整串优先)", r["bm_multiword"])
+            check("会员制餐厅" in r["cbm"],
+                  "/cbm 能回显别名列表", r["cbm"])
 
     print()
     print("=" * 72)
@@ -321,4 +403,16 @@ print(json.dumps(asyncio.run(main()), ensure_ascii=False))
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="模拟容器构建：验证 .dockerignore 没误伤运行必需文件",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    ap.add_argument(
+        "--ref", default="HEAD",
+        help="要模拟的版本（默认 HEAD）。可传任意 ref / commit sha —— "
+             "想在**提交前**先验一遍，见模块文档「提交前验证」。",
+    )
+    main(ap.parse_args().ref)
