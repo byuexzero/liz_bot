@@ -322,11 +322,12 @@ sudo systemctl restart liz-bot
 
 #### 3.6.1 登服务器、装 Docker、配镜像加速
 
-**① SSH 上去。** 控制台「概要」页有公网 IP；用户名取决于镜像类型
-（系统镜像 Ubuntu / Debian 通常是 `root`，应用镜像通常是 `lighthouse`）：
+**① SSH 上去。** 控制台「概要」页有公网 IP，用户名也在那一页。
+实测腾讯云 Ubuntu 系统镜像的用户名是 **`ubuntu`**（不是 `root`）；
+应用镜像通常是 `lighthouse`。拿不准就直接看控制台：
 
 ```bash
-ssh root@你的公网IP
+ssh ubuntu@你的公网IP
 ```
 
 **② 装 Docker。** 用官方脚本 + 国内镜像源，一步装齐 `docker-ce` +
@@ -335,9 +336,6 @@ ssh root@你的公网IP
 ```bash
 curl -fsSL https://get.docker.com | sh -s docker --mirror Aliyun
 sudo systemctl enable --now docker
-
-docker version          # 有 Client 和 Server 两段才算装好
-docker compose version  # 要能看到 v2.x，说明 compose 插件也在
 ```
 
 > `--mirror Aliyun` 让安装源指向 `mirrors.aliyun.com/docker-ce`；
@@ -351,7 +349,30 @@ docker compose version  # 要能看到 v2.x，说明 compose 插件也在
 > 实在装不上 compose 插件也不要紧，跳到
 > [§3.6.7](#367-不用-compose-的等价写法) 用 `docker run` 跑，效果一样。
 
-**③ 配镜像加速（必做）。** 不配的话 `docker pull python:3.10-slim`
+**③ 把当前用户加进 `docker` 组（必做，否则每条命令都要 `sudo`）。**
+
+装完 Docker 后，非 root 用户连不上 `/var/run/docker.sock`，会看到：
+
+```
+permission denied while trying to connect to the Docker daemon socket
+at unix:///var/run/docker.sock
+```
+
+```bash
+sudo usermod -aG docker "$USER"
+newgrp docker                # 让当前 shell 立刻拿到新组；或退出重连 SSH
+
+docker version          # 有 Client 和 Server 两段才算装好
+docker compose version  # 要能看到 v2.x，说明 compose 插件也在
+```
+
+> 不加组也行 —— 把后面所有 `docker` 都写成 `sudo docker` 即可。
+> 但**不推荐**：`sudo docker compose up` 建的 `deploy/data/` 会属 root，
+> 以后不用 sudo 时看日志、做备份都得再加 `sudo`，平白多一层麻烦。
+>
+> `newgrp` 会开一个子 shell；嫌别扭就 `exit` 断开再 `ssh` 重连一次。
+
+**④ 配镜像加速（必做）。** 不配的话 `docker pull python:3.10-slim`
 在国内大概率超时或慢到不可用：
 
 ```bash
@@ -374,12 +395,13 @@ docker info | grep -A2 "Registry Mirrors"   # 确认生效
 # 1. 拉代码（仓库很小：67 个文件、约 1.8 MB，4 Mbps 下一分钟以内）
 sudo mkdir -p /opt && cd /opt
 sudo git clone https://github.com/byuexzero/liz_bot.git
-sudo chown -R "$USER":"$USER" /opt/liz_bot
+sudo chown -R "$USER":"$USER" /opt/liz_bot   # sudo git clone 出来的文件属 root
 cd /opt/liz_bot
+git log --oneline -1                         # 确认是最新提交
 
 # 2. 准备凭据（模板见 deploy/.env.example）
 cp deploy/.env.example deploy/.env
-vim deploy/.env                 # 填 QQ_BOT_APPID / QQ_BOT_SECRET
+nano deploy/.env                # 填 QQ_BOT_APPID / QQ_BOT_SECRET（没装 nano 就用 vim）
 chmod 600 deploy/.env           # 同机其他用户不该读得到 AppSecret
 
 # 3. 构建并启动
@@ -527,7 +549,8 @@ docker run -d \
 
 | 现象 | 原因 | 怎么办 |
 |---|---|---|
-| `docker pull` 卡住 / `i/o timeout` | 没配镜像加速，或配了但不在腾讯云内网 | 回 [§3.6.1](#361-登服务器装-docker配镜像加速) 第 ③ 步；`docker info` 里要能看到 `Registry Mirrors` |
+| `docker pull` 卡住 / `i/o timeout` | 没配镜像加速，或配了但不在腾讯云内网 | 回 [§3.6.1](#361-登服务器装-docker配镜像加速) 第 ④ 步；`docker info` 里要能看到 `Registry Mirrors` |
+| `permission denied … /var/run/docker.sock` | 当前用户不在 `docker` 组 | [§3.6.1](#361-登服务器装-docker配镜像加速) 第 ③ 步：`sudo usermod -aG docker "$USER"` + `newgrp docker` |
 | 构建卡在 `Get:… deb.debian.org` | Debian 官方源在国内慢 | 加 `--build-arg APT_MIRROR=mirrors.cloud.tencent.com`，见 [§3.6.3](#363-首次构建慢怎么办) |
 | 日志里 `获取token失败，请检查appid和secret` | 凭据错 / 没读到 | 确认 `deploy/.env` 里两个值都填了、没留引号、没多余空格；`docker compose config` 能打出实际生效的环境变量 |
 | 容器起来又立刻退出，`docker ps -a` 显示 `Exited (1)` | 启动自检没过 | `docker compose logs --tail=50`。启动失败时**一定**有一行 `启动失败：<原因>`（配置缺失、回复文本缺失等），照那行改 |
