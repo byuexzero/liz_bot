@@ -51,9 +51,15 @@ COPY requirements.txt ./
 #
 #     docker build --build-arg APT_MIRROR=mirrors.cloud.tencent.com -t liz-bot .
 #
-# 已核对 mirrors.cloud.tencent.com 同时提供 /debian 与 /debian-security
-# 两个路径，且 `deb.debian.org` 这个主机名在 bookworm 的两条源里都出现，
-# 一次替换即可覆盖。腾讯云实例上更快的 `mirrors.tencentyun.com` 是内网版，
+# 已核对 mirrors.cloud.tencent.com 是**完整的 Debian 镜像**：
+#   /debian           bookworm、trixie           → 200
+#   /debian-security  bookworm-security、trixie-security → 200
+# `deb.debian.org` 这个主机名在 debian 与 debian-security 两条源里都出现，
+# 一次替换即覆盖；替换只动主机名、不动 scheme，所以源写成 http 或 https 都行。
+#
+# 注意**别在这里写死发行版代号**：python:3.10-slim 的基础镜像已经从
+# bookworm 换到了 trixie（2026-09 核对），以后还会再变。
+# 腾讯云实例上更快的 `mirrors.tencentyun.com` 是内网版，
 # 是否可用取决于实例所在网络。
 #
 # 只重写主机名、不换发行版/组件，所以镜像内容与默认构建一致 ——

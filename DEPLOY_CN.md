@@ -456,21 +456,38 @@ docker compose -f deploy/docker-compose.yml logs -f
 #### 3.6.3 首次构建慢怎么办
 
 `Dockerfile` 里的 `apt-get install build-essential` 要从 Debian 官方源
-拉约 200 MB 的 deb 包，国内直连可能几十分钟。两个办法：
+拉约 **200 MB** 的 deb 包，国内直连可能几十分钟。
+
+**办法一（推荐）：在 `deploy/.env` 里指定 apt 镜像源。**
 
 ```bash
-# 办法一（推荐）：构建时换用腾讯云 apt 镜像
-#   已核对 mirrors.cloud.tencent.com 同时提供 /debian 与 /debian-security，
-#   而 deb.debian.org 这个主机名在 bookworm 的两条源里都出现，一次替换即覆盖。
-docker compose -f deploy/docker-compose.yml build \
-  --build-arg APT_MIRROR=mirrors.cloud.tencent.com
-docker compose -f deploy/docker-compose.yml up -d
+echo 'APT_MIRROR=mirrors.cloud.tencent.com' >> deploy/.env
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
 
-```dockerfile
-# 办法二：确认构建日志里全是 "Downloading ...whl"（没有编译）之后，
-# 把 build-essential 从 Dockerfile 的 apt-get install 里删掉。
-# Dockerfile 的注释里本来就说可以删 —— 13 个顶层依赖在 linux/amd64 上全有 wheel。
+> 已核对 `mirrors.cloud.tencent.com` 是**完整的 Debian 镜像**：
+> `/debian`（bookworm、trixie）与 `/debian-security`
+> （bookworm-security、trixie-security）四条路径全部 200。
+> 替换只动主机名、不动 scheme，源写成 http 还是 https 都行。
+>
+> **为什么不每次敲 `--build-arg`**：`docker compose up -d --build` 会
+> **不带**参数重新构建，把 `--build-arg` 的成果悄悄冲掉（踩过）。
+> 写进 `.env` → compose 的 `build.args` 就不会漏。
+>
+> ⚠️ **别在任何地方写死发行版代号**：`python:3.10-slim` 的基础镜像
+> 已经从 bookworm 换成 trixie（2026-09 核对），以后还会再变。
+
+**办法二：干脆去掉 `build-essential`。** 先确认构建日志里全是
+`Downloading ...whl`（**没有** `Building wheel`），然后把 `build-essential`
+从 Dockerfile 的 `apt-get install` 里删掉 —— 那 200 MB 直接不用下了。
+Dockerfile 的注释里本来就说可以删：13 个顶层依赖在 linux/amd64 上全有 wheel。
+
+**办法三：临时用一次，不改 `.env`。**
+
+```bash
+docker compose -f deploy/docker-compose.yml build \
+  --build-arg APT_MIRROR=mirrors.cloud.tencent.com
+docker compose -f deploy/docker-compose.yml up -d    # ← 不要加 --build
 ```
 
 > 这两个办法都**只影响构建速度，不影响镜像内容** —— `APT_MIRROR`

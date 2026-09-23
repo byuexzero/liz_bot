@@ -22,6 +22,18 @@ services:
       # compose 文件在 deploy/ 里，构建上下文要指回仓库根目录。
       context: ..
       dockerfile: Dockerfile
+      args:
+        # 构建期的 apt 源主机名。留空 = 沿用基础镜像自带的 Debian 官方源。
+        #
+        # 国内构建时 build-essential 要从 deb.debian.org 拉约 200MB，
+        # 可能慢到几十分钟。在 deploy/.env 里加一行即可永久生效：
+        #
+        #     APT_MIRROR=mirrors.cloud.tencent.com
+        #
+        # 写成 args 而不是每次敲 --build-arg 的原因：`docker compose up -d
+        # --build` 会**不带**参数重新构建，把 --build-arg 的成果悄悄冲掉 ——
+        # 这个坑踩过。放进 compose 就不会漏。
+        APT_MIRROR: ${APT_MIRROR:-}
     image: liz-bot:latest
     container_name: liz-bot
 
