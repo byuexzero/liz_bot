@@ -444,20 +444,32 @@ print(json.dumps(asyncio.run(main()), ensure_ascii=False))
             df = str(build.get("dockerfile") or "").strip()
             check(bool(df) and (REPO / df).exists(), f"Dockerfile 存在（{df!r}）")
 
-            # build.args 的每个键都必须在 Dockerfile 里有对应 ARG 声明。
-            # 漏声明的后果是**静默**的：compose 传了值、Dockerfile 不接，
+            # build.args 的每个键都必须在 Dockerfile 里「既声明、又真的用到」。
+            # 两种情况都是**静默**失败：compose 传了值、Dockerfile 不接，
             # 构建照常成功，只是用的还是默认值 —— 表现是"我明明配了镜像源，
-            # 构建还是慢"。（build.args 也允许写成列表形式，这里只处理字典形式。）
+            # 构建还是慢"。只查 ARG 声明不够：`ARG FOO` 写了却从没出现 `$FOO`
+            # 时，值同样被丢掉，而只看声明的断言会放过它。
+            # （build.args 也允许写成列表形式，这里只处理字典形式。）
             args = build.get("args") or {}
             if isinstance(args, dict) and args and (REPO / df).exists():
                 dockerfile = (REPO / df).read_text(encoding="utf-8")
-                undeclared = [
-                    k for k in args
-                    if not re.search(rf"^\s*ARG\s+{re.escape(k)}\b", dockerfile, re.M)
-                ]
+
+                def _declared(k):
+                    return re.search(rf"^\s*ARG\s+{re.escape(k)}\b", dockerfile, re.M)
+
+                def _used(k):
+                    # $FOO 或 ${FOO} 都算用到；\b 防止 PIP_INDEX 被
+                    # PIP_INDEX_URL 之类的前缀命中（反之亦然）。
+                    return re.search(rf"\$\{{?{re.escape(k)}\b", dockerfile)
+
+                undeclared = [k for k in args if not _declared(k)]
+                unused = [k for k in args if _declared(k) and not _used(k)]
                 check(not undeclared,
                       f"compose build.args 的 {len(args)} 个键都有 ARG 声明",
                       "缺声明:" + ", ".join(undeclared))
+                check(not unused,
+                      f"compose build.args 的 {len(args)} 个键在 Dockerfile 里都真的被引用",
+                      "声明了但没用:" + ", ".join(unused))
 
             # 挂载点 ↔ LIZ_DATA_DIR
             mounts = set()
