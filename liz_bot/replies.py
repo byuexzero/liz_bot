@@ -93,6 +93,12 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "router.ask_params": (str, ("missing", "params")),
     # help 文案里没写 <...> 占位符时的退化文案（正常不会用到，有测试守着）
     "router.ask_params_noparam": (str, ("missing",)),
+    # 补参 / 消歧期间**执行失败**（值不对：查不到、难度写错、参数给多了）时的提示。
+    # 见 command_router._retry_text —— 失败**不清状态**，让用户重发一次即可。
+    # {error} 是原始的失败文案（可能多行，如 judge.no_chart 会列出可用难度），
+    # 所以这里只追加一行「重来」的引导，不重复解释原因。
+    "router.retry_params": (str, ("error", "params")),
+    "router.retry_params_noparam": (str, ("error",)),
     # ---- 舞萌命名空间（`#` 前缀）----
     # 实现尚未接入，所有 `#` 指令统一回这一句
     # （见 command_router.handle_maimai_command）

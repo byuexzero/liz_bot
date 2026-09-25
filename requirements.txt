@@ -22,7 +22,7 @@ PyYAML>=6.0.3               # botpy.ext.cog_yaml 读取 config.yaml
 #    只有本地保留该包时才需要。克隆后直接 `pip install -r requirements.txt`
 #    会一并装上，不影响机器人运行（`liz_bot/` 对它零 import）。
 #
-#    装不上也不影响机器人 —— 机器人只用第 1 / 3 / 4 / 6 组。
+#    装不上也不影响机器人 —— 机器人只用第 1 / 3 / 4 / 6 / 7 组。
 httpx>=0.28.1               # 所有 API 请求（同步 + 异步）
 pycryptodome>=3.23.0        # AES-CBC 加解密（import 名为 Crypto）
 pytz>=2025.2                # 接口时间戳需 Asia/Tokyo / Asia/Shanghai 时区
@@ -33,8 +33,12 @@ python-dotenv>=1.0.0        # 读取 .env（未安装时 maimai.config 会退回
 # 无需额外依赖：曲库 music_data.json 由 json.load() 全量载入并建索引。
 # 原先用 ijson 流式解析，重构后已移除（详见 song_query.py 的 _load 说明）。
 
-# ---------- 4. 表情包上传 (liz_bot/pic_haddler.py) ----------
-aiohttp>=3.13.2             # 异步上传媒体到腾讯服务器
+# ---------- 4. 异步 HTTP 客户端 ----------
+# 实际是 qq-botpy 的**声明依赖**（botpy/http.py 直接 import aiohttp），
+# 所以无论如何都会装上；这里显式列出，是因为我们自己也直接用：
+#   - liz_bot/media_upload.py  分片上传的预签名 PUT（COS 地址，不能走 botpy 客户端）
+#   - liz_bot/pic_haddler.py   表情包上传（**当前无人引用，属死代码**）
+aiohttp>=3.13.2
 
 # ---------- 5. GitHub 镜像下载器 (download.py) ----------
 requests>=2.32.5
@@ -43,6 +47,18 @@ urllib3>=2.6.2
 # ---------- 6. AI 对话 (liz_bot/qqgroup-ai-bot.py) ----------
 qianfan>=0.4.12.3           # 百度千帆 ERNIE 大模型 SDK
 aiofiles>=25.1.0            # 异步读写 ai_chat 会话记录
+
+# ---------- 7. 判定细节出图 (liz_bot/judge_image.py) ----------
+# /songdata 的图片版：把判定表画成 PNG（表格靠空格对齐在 QQ 的比例字体下
+# 必然错位，出图才看得清）。
+#
+# ⚠️ **这是可选依赖** —— 没装时 judge_image 会 import 失败并降级，
+#    /songdata 照常回文字版，机器人其余功能一概不受影响。
+#    所以「装不上」不是故障，只是少了个图片版。
+#
+# 另需系统 CJK 字体，否则汉字会渲染成方框（容器里由 Dockerfile 的
+# `fonts-noto-cjk` 提供）。可用 LIZ_JUDGE_FONT 环境变量覆盖字体路径。
+Pillow>=10.0.0              # 渲染 PNG（import 名为 PIL）
 
 # ============================================================
 # 备注

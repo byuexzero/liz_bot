@@ -91,7 +91,8 @@ RUN if [ -n "$APT_MIRROR" ]; then \
     fi; \
     if [ -n "$PIP_INDEX" ]; then export PIP_INDEX_URL="$PIP_INDEX"; fi; \
     apt-get update \
- && apt-get install -y --no-install-recommends build-essential tzdata \
+ && apt-get install -y --no-install-recommends \
+      build-essential tzdata fonts-noto-cjk \
  && pip install --no-cache-dir -r requirements.txt \
  && apt-get purge -y --auto-remove build-essential \
  && rm -rf /var/lib/apt/lists/*

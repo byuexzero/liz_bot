@@ -128,10 +128,14 @@ async def upload_file_by_index(
 #         # 生成动态消息序号（避免重复）
 #         msg_seq = int(time.time() * 1000) % 100000
 #
-#         # 被动回复富媒体消息（使用file_info）
+#         # 被动回复富媒体消息（使用 file_info）
+#         # ⚠️ media 必须是**对象** {"file_info": ...}，不是裸的 file_info 字符串。
+#         #    官方文档《使用 file_info 发送》的原文示例：
+#         #        { "msg_type": 7, "media": { "file_info": "{上一步返回的 file_info}" } }
+#         #    （这里原先写的是 media=upload_res["file_info"]，是错的。）
 #         await message.reply(
 #             msg_type=7,
-#             media=upload_res["file_info"],
+#             media={"file_info": upload_res["file_info"]},
 #             msg_seq=msg_seq
 #         )
 #

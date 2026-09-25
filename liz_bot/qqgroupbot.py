@@ -8,8 +8,8 @@ import botpy
 from botpy import logging
 from botpy.message import GroupMessage
 
-from liz_bot import replies
-from liz_bot.command_router import reply_text
+from liz_bot import media_upload, replies
+from liz_bot.command_router import RichReply, reply_text
 from liz_bot.config import BotConfig, load_bot_config
 from liz_bot.healthz import set_status as set_health_status
 from liz_bot.runtime_paths import LOG_DIR
@@ -109,6 +109,13 @@ def _get_dup_cache() -> ExpiringCache:
 #: 所以出错时要用**另一个** seq 才能发得出去。
 _ERROR_MSG_SEQ = 2
 
+#: 发图失败、退回文字版时用的 ``msg_seq``。
+#:
+#: 用 3 而不是 1 或 2：``seq=1`` 可能已被那次发图占用（发图本身走
+#: ``msg_id + msg_seq=1``），``seq=2`` 是 :data:`_ERROR_MSG_SEQ` 的地盘。
+#: 三个 seq 互不相同，任何一条路径都能发得出去。
+_RICH_FALLBACK_MSG_SEQ = 3
+
 
 def _session_key(message: GroupMessage) -> str:
     """多轮补参的会话键：``群 openid:成员 openid``。
@@ -165,9 +172,17 @@ class MyClient(botpy.Client):
             try:
                 # 前缀识别（`/` 本机指令 / `#` 舞萌命名空间）、解析、分发，
                 # 全部在 command_router.reply_text 里 —— 本类只负责收发、
-                # 补参会话键，以及「空消息」和「异常」这两个外壳行为。
-                await message.reply(content=await reply_text(
-                    message.content, session_key=_session_key(message)))
+                # 补参会话键，以及「空消息」「发图」「异常」这三个外壳行为。
+                #
+                # ``rich=True`` 允许把结果渲染成图片：判定细节是 5 列表格，
+                # 靠空格对齐在 QQ 的比例字体下**必然错位**，出图才看得清。
+                reply = await reply_text(
+                    message.content, session_key=_session_key(message), rich=True)
+
+                if isinstance(reply, RichReply):
+                    await self._send_rich(message, reply)
+                else:
+                    await message.reply(content=reply)
 
             except Exception as e:
                 _log.error(f"处理消息失败：{e}")
@@ -191,6 +206,41 @@ class MyClient(botpy.Client):
             msg_type=0,
             content=replies.text("bot.error", error=str(error)[:20]),
         )
+
+    async def _send_rich(self, message: GroupMessage, reply: RichReply) -> None:
+        """把富媒体（图片）发到群里；**任何失败都退回文字版**。
+
+        图片是锦上添花：上传要经过 4 次网络往返（prepare → PUT 分片 →
+        part_finish → 合并），中间任何一步抖动都不该让用户什么都收不到。
+        而 ``reply.fallback`` 本来就是同一份文字版回复，退回去零成本。
+
+        本方法**刻意不抛异常** —— 发图失败已经被处理掉了，再往外抛只会让
+        外层把它当成「处理消息失败」并再回一句错误提示，等于同一件事报两次。
+        """
+        try:
+            await media_upload.send_group_image(
+                self.api,
+                message.group_openid,
+                reply.png,
+                msg_id=message.id,
+                msg_seq=1,  # 被动回复，不消耗主动消息配额
+                filename=reply.filename,
+            )
+            return
+        except Exception:
+            _log.exception("发图失败，退回文字版")
+
+        try:
+            await self.api.post_group_message(
+                group_openid=message.group_openid,
+                msg_id=message.id,
+                msg_seq=_RICH_FALLBACK_MSG_SEQ,
+                msg_type=0,
+                content=reply.fallback,
+            )
+        except Exception:
+            # 连降级都失败就只能记日志了 —— 用户收不到东西，但至少能查到原因。
+            _log.exception("发图失败后的文字版降级也失败了")
 
 
 # 启动机器人

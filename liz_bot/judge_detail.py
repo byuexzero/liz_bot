@@ -5,9 +5,22 @@
 数据从哪来
 ==========
 
-**物量**（各音符类型的颗数）来自曲库 ``charts[i].notes`` —— diving-fish 格式，
-数组顺序是 ``[tap, hold, slide, break, touch]``。
-⚠️ SD 谱只有前 4 位（SD 没有 touch），读第 5 位会 ``IndexError``。
+**物量**（各音符类型的颗数）来自曲库 ``charts[i].notes`` —— diving-fish 格式。
+⚠️ **数组长度决定含义，不能按固定下标读**：touch 只有 DX 谱才有，而且它是
+**从中间省略**的，不是末尾 ——
+
+    5 位（DX）: [tap, hold, slide, touch, break]
+    4 位（SD）: [tap, hold, slide, break]        ← touch 省略后 break 前移到位 3
+
+所以 SD 谱的位 3 是 **break**，DX 谱的位 3 是 **touch**。依据是 diving-fish
+官方 API 文档对 ``/music_data`` 的 ``charts[].notes`` 的描述：
+「依次为 Tap、Hold、Slide、（Touch，仅 DX 类型）、Break」。
+
+⚠️ **2026-09-26 修正**：本模块原先按固定的 ``[tap, hold, slide, break, touch]``
+读，于是**所有 DX 谱的 touch 与 break 被互换**（3285 张），理论分与 break 明细
+全错。SD 谱恰好不受影响（4 位里位 3 本来就是 break），所以当初用 SD 曲
+``id 143`` 反算达成率才会「歪打正着」地吻合 —— 那条验证**无法覆盖 DX**。
+现在按长度分派，见 :data:`NOTES_ORDER_BY_LEN`。
 
 **分值**不是猜的，来自**网络上流传的** maimai DX 客户端反编译产物 ——
 其中的判定得分表 ``judgeScoreTbl``（每种音符类型 × 每个判定档位的得分）、
@@ -94,9 +107,23 @@ logger = logging.getLogger(__name__)
 #: 因为它的扣分在主表里不展开（有自己的明细表）。
 COLUMN_ORDER = ("tap", "hold", "slide", "touch", "break")
 
-#: 曲库 ``charts[].notes`` 的数组顺序（diving-fish 格式）。
-#: ⚠️ SD 谱只有前 4 位（无 touch），越界读会 ``IndexError``。
-NOTES_ORDER = ("tap", "hold", "slide", "break", "touch")
+#: 曲库 ``charts[].notes`` 的**规范顺序**（DX 谱，5 位）。用作「全部音符类型」的
+#: 枚举 —— 理论分求和与补零都走它，所以 :func:`_counts` 必须把 5 个键都返回。
+#: ⚠️ 别拿它直接索引 ``notes``，SD 谱是 4 位（见 :data:`NOTES_ORDER_BY_LEN`）。
+NOTES_ORDER = ("tap", "hold", "slide", "touch", "break")
+
+#: ``notes`` 的**实际**数组顺序 —— **按长度分派**。
+#:
+#: diving-fish 只在 DX 谱里给 touch，SD 谱**从中间省略**它，于是 break 前移：
+#:
+#: * 5 位（DX）``[tap, hold, slide, touch, break]``
+#: * 4 位（SD）``[tap, hold, slide, break]``
+#:
+#: 所以「位 3」在两种谱面里含义不同 —— 这是本模块最容易踩的坑。
+NOTES_ORDER_BY_LEN: dict[int, tuple[str, ...]] = {
+    5: ("tap", "hold", "slide", "touch", "break"),
+    4: ("tap", "hold", "slide", "break"),
+}
 
 #: 每个音符的满分（= Critical 档得分），``judgeScoreTbl`` 第 7 列。
 #: 权重比 tap:hold:slide:break = 1:2:3:5（touch 同 tap）。
@@ -169,14 +196,20 @@ def resolve_difficulty(text) -> int | None:
 
 
 def _counts(chart: dict) -> dict[str, int]:
-    """把 ``charts[i].notes`` 摊成 ``{音符类型: 颗数}``。
+    """把 ``charts[i].notes`` 摊成 ``{音符类型: 颗数}``（5 个键齐全）。
 
-    数组比预期短时（SD 谱没有第 5 位的 touch）缺的按 0 计 —— 不是错误，
-    SD 谱本来就没有 touch。
+    **按数组长度分派顺序** —— 见 :data:`NOTES_ORDER_BY_LEN`。
+    这不是防御性编程，是格式本身如此：SD 谱 4 位 ``[tap, hold, slide, break]``、
+    DX 谱 5 位 ``[tap, hold, slide, touch, break]``，位 3 的含义随长度变化。
+
+    长度不在表里时（格式变了 / 脏数据）退回 :data:`NOTES_ORDER` 并按需补零，
+    至少不会 ``IndexError``。缺的类型一律按 0 计 —— 不是错误，SD 谱本来就没有
+    touch。
     """
     raw = chart.get("notes") or []
-    counts: dict[str, int] = {}
-    for index, note_type in enumerate(NOTES_ORDER):
+    order = NOTES_ORDER_BY_LEN.get(len(raw), NOTES_ORDER)
+    counts: dict[str, int] = {note_type: 0 for note_type in NOTES_ORDER}
+    for index, note_type in enumerate(order):
         value = raw[index] if index < len(raw) else 0
         counts[note_type] = value if isinstance(value, int) and value > 0 else 0
     return counts

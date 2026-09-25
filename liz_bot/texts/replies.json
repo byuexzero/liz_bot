@@ -14,7 +14,9 @@
     "bad_params": "笨蛋参数不够啦～ 用法：{usage}",
     "too_many_params": "笨蛋参数太多啦～ 用法：{usage}",
     "ask_params": "还差 {missing} 个参数（{params}）～ 直接发给我就好",
-    "ask_params_noparam": "还差 {missing} 个参数～ 直接发给我就好"
+    "ask_params_noparam": "还差 {missing} 个参数～ 直接发给我就好",
+    "retry_params": "{error}\n重新发一次就好～ 需要：{params}",
+    "retry_params_noparam": "{error}\n重新发一次就好～"
   },
   "maimai": {
     "unparsed": "未解析的指令"

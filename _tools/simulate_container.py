@@ -310,7 +310,23 @@ def main(ref: str = "HEAD") -> None:
         print("=" * 72)
         print(f"A. 取出仓库内容:{len(tracked)} 个文件")
         print("=" * 72)
-        check(len(tracked) > 50, f"git archive 解出 {len(tracked)} 个文件")
+        # ⚠️ 原先断言的是「文件数 > 50」这个魔数 —— 2026-09-26 把 maimai/ 移出
+        #    仓库后只剩 44 个，断言就误报了。改成**按内容断言**：镜像必需的关键
+        #    文件必须在。这样增删文档不会再误报，而「archive 取空了 / 关键文件
+        #    被 .dockerignore 之外的原因弄丢」仍然会被抓住。
+        required = (
+            "run.py",
+            "Dockerfile",
+            "requirements.txt",
+            "liz_bot/qqgroupbot.py",
+            "liz_bot/command_router.py",
+            "liz_bot/texts/replies.json",
+            "deploy/docker-compose.yml",
+        )
+        missing = [f for f in required if f not in tracked]
+        check(len(tracked) > 20 and not missing,
+              f"git archive 解出 {len(tracked)} 个文件，且关键文件齐全",
+              f"缺：{missing}")
 
         # ------------------------------------------------ 应用 .dockerignore
         kept, dropped = [], []
