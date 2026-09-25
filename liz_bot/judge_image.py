@@ -173,14 +173,18 @@ def render_png(song_id: str, difficulty: str) -> bytes | None:
     if index >= len(charts):
         return None
 
+    # 编码也在 try 里 —— 本函数的契约是「**任何原因**不能渲染时返回 None」，
+    # 而 image.save() 同样可能失败（PIL 内部错误、内存不足等）。
+    # 漏掉它会破坏那个契约：异常会一路冒到 qqgroupbot 的兜底分支，
+    # 用户收到「出错了」而不是本来好好的文字版。
     try:
         image = _draw(song, charts[index], index, fonts)
+        buf = io.BytesIO()
+        image.save(buf, format="PNG", optimize=True)
     except Exception:  # noqa: BLE001 - 渲染失败一律降级，不让查歌跟着挂
         logger.exception("渲染判定图失败：song_id=%r difficulty=%r", song_id, difficulty)
         return None
 
-    buf = io.BytesIO()
-    image.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 
