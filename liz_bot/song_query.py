@@ -70,9 +70,17 @@
    柚子库直接给 ``song_id``，关联可靠。
 
 主要对外接口：
-    select_song(select_data, select_type)  低层检索，返回原始结构
+    select_song(select_data, select_type)  低层检索，返回**全部**命中
     query_by_id / query_by_name / query_by_alias / query_any
-    song_reply / songdata_reply / alias_reply  直接产出可回复的字符串
+    format_song(song) / alias_text(hit)     把**一条命中**渲染成回复文本
+    choose_text(hits)                       命中多个候选时的追问文案
+    song_reply / alias_reply                关键词 → 回复（取首条命中）
+
+⚠️ ``song_reply`` / ``alias_reply`` 只取 ``hits[0]``。**同名不同版本
+（SD / DX）在曲库里是两条记录**（实测 58 个曲名、385 个别名会命中多首），
+所以「多个候选怎么让用户选」由 :mod:`liz_bot.command_router` 的消歧流程处理，
+本模块只提供 :func:`choose_text` 与 :func:`format_song` / :func:`alias_text`
+这些零件。
 
 回复文案
 --------
@@ -89,8 +97,11 @@ import os
 import threading
 from typing import Any
 
-from liz_bot import replies
+from liz_bot import replies, text_layout
 from liz_bot.song_paths import ALIASES_JSON, MUSIC_DATA_JSON
+
+# 注：原先这里有个模块级 logger，只为 songdata_reply 的错误分支而加。
+# 该函数已由 liz_bot/judge_detail.py 取代（2026-09-25），logger 随之移除。
 
 # ---------------------------------------------------------------------------
 # 检索类型常量
@@ -493,47 +504,94 @@ def format_song(song_data: dict) -> str:
     )
 
 
+#: 候选列表里曲名的最大显示宽度（格）。
+#:
+#: 全库最长曲名 **76 格**（``私の中の幻想的世界観及びその顕現を想起させたある
+#: 現実での出来事に関する一考察``），不截断会把候选行撑到 67+ 格 —— 手机上
+#: 折行后「序号」与「曲名」会错位，序号也就没法用了。
+#: 取 20 格后候选行 ≤ 38 格，与判定明细表（最宽 39）同一量级。
+CHOICE_TITLE_WIDTH = 20
+
+
+def song_id(hit: dict) -> int:
+    """取命中项的曲目 ID；转不成 int 时返回 ``-1``。"""
+    return _as_int((hit.get("song") or {}).get("id"))
+
+
+def alias_text(hit: dict) -> str:
+    """把**一条命中**渲染成「别名列表」回复。
+
+    与 :func:`alias_reply` 的区别：这个直接吃 ``select_song`` 的返回单元，
+    所以调用方可以自己决定用哪一条命中 —— 消歧时正是这么用的。
+    """
+    aliases = hit.get("aliases") or []
+    if not aliases:
+        # 曲目存在但别名库里没有它的条目 —— 与旧实现「在 alias.json 里找不到
+        # 同名条目就返回 NOT_FOUND」的行为一致。
+        return replies.text("song.not_found")
+    return replies.text("song.alias_header", aliases=aliases)
+
+
+def choose_text(hits: list[dict]) -> str:
+    """命中多个候选时的追问文案 —— 列出候选，等用户回复**序号或 id**。
+
+    为什么不能静默取第一条：同名不同版本（SD / DX）在曲库里是**两条记录**
+    （实测 58 个曲名、385 个共享别名会命中多首，且首条**永远是 SD**），
+    静默取首条等于让另一版永远查不到。
+
+    两种标识都印出来（序号 + ``id``），因为用户可能更习惯直接报 id。
+    """
+    missing = replies.text("song.missing")
+    lines = []
+    for index, hit in enumerate(hits, start=1):
+        song = hit.get("song") or {}
+        lines.append(replies.text(
+            "song.choose_option",
+            index=index,
+            type=str(song.get("type") or missing).strip(),
+            title=text_layout.truncate(
+                str(song.get("title") or ""), CHOICE_TITLE_WIDTH
+            ),
+            id=song.get("id"),
+        ))
+    return replies.text("song.choose", count=len(hits), options="\n".join(lines))
+
+
 def song_reply(keyword: str, select_type: int) -> str:
-    """查歌指令的统一回复入口。
+    """查歌指令的统一回复入口 —— 取**首条**命中。
 
     :param keyword: 检索关键词
     :param select_type: 0/1/2/3 见 select_song
     :return: 格式化后的回复文本，未命中返回 ``song.not_found`` 的文案
+
+    .. note::
+
+       命中多个时这里**只给第一条**。需要让用户挑的场合（SD/DX 同名）走
+       :mod:`liz_bot.command_router` 的消歧流程 —— 它直接用 :func:`select_song`
+       + :func:`format_song`，不经过本函数。
+
+       原先这里有个 ``except IndexError`` —— 不可达（``select_song`` 返回列表、
+        ``hits[0]`` 前已有空判断），2026-09-25 清掉。
     """
-    try:
-        song_data = select_song(select_data=keyword, select_type=select_type)
-    except IndexError:
+    hits = select_song(select_data=keyword, select_type=select_type)
+    if not hits:
         return replies.text("song.not_found")
-    if not song_data:
-        return replies.text("song.not_found")
-    return format_song(song_data[0]['song'])
-
-
-def songdata_reply(keyword: str) -> str:
-    """原样输出检索到的完整结构（调试用）。"""
-    try:
-        return str(select_song(select_data=keyword, select_type=BY_ID))
-    except IndexError:
-        return replies.text("song.data_error")
+    return format_song(hits[0]["song"])
 
 
 def alias_reply(keyword: str) -> str:
-    """查询某首歌的全部别名。
+    """查询某首歌的全部别名 —— 取**首条**命中。
 
-    文本格式取 ``replies.json`` 的 ``song.alias_header`` 键（默认
-    ``歌曲有以下别名：{aliases}``，别名列表按 Python 列表原样输出），
-    数据源为柚子别名库。
+    文本格式取 ``replies.json`` 的 ``song.alias_header`` 键，数据源为柚子别名库。
 
-    曲目存在但别名库里没有它的条目时返回 ``song.not_found`` 的文案 ——
-    与旧实现"在 alias.json 里找不到同名条目就返回 NOT_FOUND"的行为一致。
+    .. note::
+
+       原先这里包着 ``except (IndexError, TypeError)`` —— 两者都不可达：
+       ``select_song`` 对非字符串返回空列表（不抛 ``TypeError``），
+       而 ``hits[0]`` 前面已有空列表判断。2026-09-25 清掉 ——
+       与 ``songdata`` 那次「死 except」是同一类问题。
     """
-    try:
-        song_data = select_song(select_data=keyword, select_type=BY_ANY)
-        if not song_data:
-            return replies.text("song.not_found")
-        aliases = song_data[0]["aliases"]
-        if not aliases:
-            return replies.text("song.not_found")
-        return replies.text("song.alias_header", aliases=aliases)
-    except (IndexError, TypeError):
-        return replies.text("song.bad_params")
+    hits = select_song(select_data=keyword, select_type=BY_ANY)
+    if not hits:
+        return replies.text("song.not_found")
+    return alias_text(hits[0])

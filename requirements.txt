@@ -1,6 +1,6 @@
 # ============================================================
 # Project Sega - Dependencies
-# 舞萌 DX (maimai DX) QQ 群机器人 + 服务端 API 工具链
+# 舞萌 DX (maimai DX) QQ 群机器人
 # ============================================================
 #
 # Python 版本要求: 3.10 - 3.12
@@ -17,7 +17,12 @@
 qq-botpy>=1.2.1             # 腾讯官方机器人 SDK（import 名为 botpy）
 PyYAML>=6.0.3               # botpy.ext.cog_yaml 读取 config.yaml
 
-# ---------- 2. 舞萌服务端 API 客户端 (maimai/) ----------
+# ---------- 2. 本地服务端 API 工具链 (maimai/) ----------
+# ⚠️ `maimai/` **不随仓库分发**（见 .gitignore），所以下面这组依赖
+#    只有本地保留该包时才需要。克隆后直接 `pip install -r requirements.txt`
+#    会一并装上，不影响机器人运行（`liz_bot/` 对它零 import）。
+#
+#    装不上也不影响机器人 —— 机器人只用第 1 / 3 / 4 / 6 组。
 httpx>=0.28.1               # 所有 API 请求（同步 + 异步）
 pycryptodome>=3.23.0        # AES-CBC 加解密（import 名为 Crypto）
 pytz>=2025.2                # 接口时间戳需 Asia/Tokyo / Asia/Shanghai 时区
@@ -54,9 +59,11 @@ aiofiles>=25.1.0            # 异步读写 ai_chat 会话记录
 # 3. 未收录的运行时依赖（标准库）:
 #    json / zlib / hashlib / sqlite3 / asyncio / threading 等无需安装。
 #
-# 4. 运行 maimai 包前需先准备配置文件:
+# 4. `maimai/` 包**不随仓库分发**（本地保留，见 .gitignore）。
+#    要跑它需先准备配置文件:
 #        cp .env.example .env   # 然后填入真实密钥与凭据
 #    .env 已被 .gitignore 排除，不会入库。
+#    机器人本身不需要它，也不需要 .env。
 #
 # 5. 旧实现已归档，不在本 requirements 范围:
 #    - legacy_sdgb_stack/   旧 sdgb / eaquira / Lionheart，见其 README.md

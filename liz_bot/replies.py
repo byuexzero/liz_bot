@@ -75,12 +75,54 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "song.data_error": (str, ()),
     "song.bad_params": (str, ()),
     "song.alias_header": (str, ("aliases",)),
+    # 命中多个候选（SD / DX 同名）时的消歧追问（见 command_router 的消歧流程）
+    "song.choose": (str, ("count", "options")),
+    "song.choose_option": (str, ("index", "type", "title", "id")),
     "song.format": (str, ("title", "artist", "id", "master_ds",
                           "master_charter", "rem_ds", "rem_charter")),
     # ---- 指令分发 ----
     "router.unknown_command": (str, ("cmd_name",)),
+    # 参数个数校验（见 command_router.COMMANDS 的 min/max_params）
+    "router.bad_params": (str, ("usage",)),
+    "router.too_many_params": (str, ("usage",)),
+    # 多轮补参：参数不够时的追问（见 liz_bot/pending.py）
+    # ⚠️ 刻意**不带** {usage} —— 追问只报「还差几个 + 还差哪几个参数」，
+    #    不带指令头（用户要求）。需要看完整用法的场景走 router.bad_params。
+    #    {params} 取自该指令 help 文案里的 <...> 占位符（见 command_router._param_names），
+    #    所以文案里的参数名只有一份，不会漂移。
+    "router.ask_params": (str, ("missing", "params")),
+    # help 文案里没写 <...> 占位符时的退化文案（正常不会用到，有测试守着）
+    "router.ask_params_noparam": (str, ("missing",)),
+    # ---- 舞萌命名空间（`#` 前缀）----
+    # 实现尚未接入，所有 `#` 指令统一回这一句
+    # （见 command_router.handle_maimai_command）
+    "maimai.unparsed": (str, ()),
+    # ---- 谱面判定细节（/songdata，见 liz_bot/judge_detail.py）----
+    # 难度显示名，下标即难度下标（0=Basic … 4=Re:Master）。
+    # ⚠️ 顺序必须与曲库 charts/level/ds 的下标一致，别重排。
+    "judge.difficulties": (list, ()),
+    "judge.header": (str, ("title", "difficulty", "level", "charter")),
+    "judge.scale": (str, ("base_score", "bonus_score")),
+    "judge.row_count": (str, ()),
+    # 刻意没有 row_cp_p —— cp/p 恒不扣分，不占表行（见 judge_detail 模块文档）
+    "judge.row_great": (str, ()),
+    "judge.row_good": (str, ()),
+    "judge.row_miss": (str, ()),
+    "judge.unit": (str, ()),
+    "judge.break_title": (str, ("count",)),
+    "judge.break_hint": (str, ()),
+    "judge.no_break": (str, ()),
+    # 表格里「该类型没有音符 / 见另一张表」的占位符
+    "judge.placeholder": (str, ()),
+    # 一行一个难度（原先用 available_sep 拼成一行，最宽达 79 格必然折行）
+    "judge.available_line": (str, ("name", "level")),
+    "judge.bad_difficulty": (str, ("value",)),
+    "judge.no_chart": (str, ("difficulty", "available")),
     # ---- 日常指令 ----
     "daily.help": (str, ()),
+    "daily.help_alias": (str, ("aliases",)),
+    # /help 末尾的舞萌命名空间说明（见 command_router.help_reply）
+    "daily.help_maimai": (str, ()),
     "daily.greeting": (str, ()),
     # ---- 别名管理（写入已停用，仅保留提示文案）----
     "alias.add_failed": (str, ()),
@@ -89,6 +131,21 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "bot.none_reply": (list, ()),
     "bot.not_command": (str, ("content",)),
     "bot.error": (str, ("error",)),
+    # ---- 指令表（/help 用）----
+    # 每个键对应 command_router.COMMANDS 里的一条指令，值是**整行** help 文案，
+    # 形如 ``/song <歌名或别名> — 按歌名或别名查歌``。
+    # ⚠️ 必须以 ``/{该指令的规范名}`` 开头 —— command_router.help_reply() 会
+    # 逐条断言这一点，防止「改了指令名却忘了改文案」这类静默漂移。
+    "commands.help": (str, ()),
+    "commands.hello": (str, ()),
+    "commands.random": (str, ()),
+    "commands.id": (str, ()),
+    "commands.songdata": (str, ()),
+    "commands.bm": (str, ()),
+    "commands.name": (str, ()),
+    "commands.song": (str, ()),
+    "commands.alias_query": (str, ()),
+    "commands.alias_add": (str, ()),
 }
 
 

@@ -1,17 +1,15 @@
-import os
-import time
-import random
 import asyncio
+import os
+import random
+import time
 from typing import Dict
-import re
+
 import botpy
 from botpy import logging
 from botpy.message import GroupMessage
-from botpy import logging
-from botpy.ext.command_util import Commands
-from botpy.message import GroupMessage, Message
+
 from liz_bot import replies
-from liz_bot.command_handler import handle_command, parse_command
+from liz_bot.command_router import reply_text
 from liz_bot.config import BotConfig, load_bot_config
 from liz_bot.healthz import set_status as set_health_status
 from liz_bot.runtime_paths import LOG_DIR
@@ -41,7 +39,12 @@ class ExpiringCache:
         self.cache: Dict[str, float] = {}
         self.expire = expire_seconds
         # 启动后台清理任务（守护任务，不阻塞退出）
-        asyncio.create_task(self._clean_loop(), name="cache_cleaner")
+        #
+        # ⚠️ 必须**持有任务引用**：``asyncio`` 只对 task 持弱引用，不保存的话
+        # 它可能在执行到 ``await`` 之前就被 GC 掉（官方文档明确警告
+        # "Save a reference to the result of this function"）。
+        # 这里存到实例属性上，随实例一起存活。
+        self._clean_task = asyncio.create_task(self._clean_loop(), name="cache_cleaner")
 
     def add(self, key: str):
         """添加缓存键，值为当前时间戳"""
@@ -69,6 +72,59 @@ class ExpiringCache:
         # 注：守护任务会随主事件循环退出而终止，无内存泄漏
 
 
+#: 消息去重窗口（秒）。
+#:
+#: QQ 开放平台在超时重推时会**把同一条消息投递多次**，不去重就会回复多次。
+#: 3 秒足够覆盖平台的重试间隔，又短到不会把「用户真的连发两条」误判成重复
+#: （那种情况 message id 不同，本来也不会命中）。
+DUP_WINDOW_SECONDS = 3
+
+#: 消息去重缓存。**惰性创建**，原因见 :func:`_get_dup_cache`。
+_dup_cache: "ExpiringCache | None" = None
+
+
+def _get_dup_cache() -> ExpiringCache:
+    """取（必要时创建）消息去重缓存。
+
+    ⚠️ 不能写成模块级 ``_dup_cache = ExpiringCache()``：``ExpiringCache.__init__``
+    会 ``asyncio.create_task``，而模块 import 时**没有运行中的事件循环**，
+    会直接抛 ``RuntimeError: no running event loop``。
+    本函数只在协程里被调用（消息回调），那里一定有循环。
+
+    惰性创建而非放在 ``on_ready`` 里，是为了**不依赖回调顺序** ——
+    万一在 ``on_ready`` 之前就来消息，去重也不会失效。
+    """
+    global _dup_cache
+    if _dup_cache is None:
+        _dup_cache = ExpiringCache(DUP_WINDOW_SECONDS)
+        _log.info("消息去重已启用（窗口 %ds）", DUP_WINDOW_SECONDS)
+    return _dup_cache
+
+
+
+#: 错误提示用的 ``msg_seq``。
+#:
+#: ``message.reply()`` 内部就是 ``post_group_message(msg_id=..., msg_seq=1)``，
+#: 而「相同的 msg_id + msg_seq 重复发送会失败」（见 botpy ``api.py``），
+#: 所以出错时要用**另一个** seq 才能发得出去。
+_ERROR_MSG_SEQ = 2
+
+
+def _session_key(message: GroupMessage) -> str:
+    """多轮补参的会话键：``群 openid:成员 openid``。
+
+    **必须带群** —— ``member_openid`` 只在同一个群内稳定，只用它会把不同群里的
+    同一个人串成一条会话（A 群没收完的补参会跑到 B 群去续）。
+
+    任一部分缺失时返回空串 —— 此时不启用补参。宁可没有这个功能，
+    也不要因为一个缺失字段把所有人的补参状态混到一起。
+    """
+    group = message.group_openid
+    member = getattr(message.author, "member_openid", None)
+    if not group or not member:
+        return ""
+    return f"{group}:{member}"
+
 
 # 机器人核心类
 #
@@ -85,31 +141,56 @@ class MyClient(botpy.Client):
 
     async def on_group_at_message_create(self, message: GroupMessage):
         """监听群聊@消息，解析并处理指令"""
+        # 0. 消息去重 —— QQ 开放平台超时重推时会**把同一条消息投递多次**，
+        #    不去重就会重复回复（每条回复都占主动消息配额，还可能触发限频）。
+        #    判据优先用 ``message.id``（平台侧消息唯一标识），
+        #    它缺失时退回 ``event_id``；两者都没有就跳过去重（不阻断正常流程）。
+        #
+        #    放在**最前面**：重复的空消息也不该被回两次随机文案；
+        #    而且补参状态下重复投递会把同一个参数叠两次，所以去重必须在它之前。
+        dup_key = message.id or message.event_id
+        if dup_key:
+            cache = _get_dup_cache()
+            if cache.exists(dup_key):
+                _log.info("忽略重复投递的消息：id=%s", dup_key)
+                return
+            cache.add(dup_key)
+
         if message.content.strip() == "":
-            # 空消息时的随机回复候选，文案见 replies.json 的 bot.none_reply
+            # 空消息时的随机回复候选，文案见 replies.json 的 bot.none_reply。
+            # 刻意**不动**补参状态 —— 空消息通常只是误触，不该把用户正在补的
+            # 参数丢掉（超时自会作废，见 liz_bot/pending.py）。
             await message.reply(content=random.choice(replies.get("bot.none_reply")))
         else:
             try:
-                # 1. 解析指令
-                cmd_name, cmd_params, is_valid = await parse_command(message.content)
-
-                # 2. 处理解析结果
-                if not is_valid:
-                    # 非/开头的消息，返回"未知的指令"
-                    await message.reply(content=replies.text(
-                        "bot.not_command", content=message.content))
-                else:
-                    # 解析成功，分发到指令处理器
-                    a = await handle_command(cmd_name, cmd_params)
-                    await message.reply(content=a)
+                # 前缀识别（`/` 本机指令 / `#` 舞萌命名空间）、解析、分发，
+                # 全部在 command_router.reply_text 里 —— 本类只负责收发、
+                # 补参会话键，以及「空消息」和「异常」这两个外壳行为。
+                await message.reply(content=await reply_text(
+                    message.content, session_key=_session_key(message)))
 
             except Exception as e:
                 _log.error(f"处理消息失败：{e}")
-                await self.api.post_group_message(
-                    group_openid=message.group_openid,
-                    msg_type=0,
-                    content=replies.text("bot.error", error=str(e)[:20]),
-                )
+                await self._reply_error(message, e)
+
+    async def _reply_error(self, message: GroupMessage, error: Exception) -> None:
+        """把异常回给用户。
+
+        ⚠️ **必须带上 ``msg_id``** —— 不带的话这就成了「主动消息」，
+        要消耗主动消息配额（每条群每月额度有限，见 QQ 开放平台文档）。
+        正常回复走 ``message.reply()`` 是**被动**回复、不花配额，
+        出错时反而去花配额是反的。
+
+        ``msg_seq`` 用 2 而不是 1：``seq=1`` 已被 ``message.reply()`` 占用，
+        且「相同的 msg_id + msg_seq 重复发送会失败」。
+        """
+        await self.api.post_group_message(
+            group_openid=message.group_openid,
+            msg_id=message.id,
+            msg_seq=_ERROR_MSG_SEQ,
+            msg_type=0,
+            content=replies.text("bot.error", error=str(error)[:20]),
+        )
 
 
 # 启动机器人

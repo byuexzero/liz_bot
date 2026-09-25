@@ -5,13 +5,41 @@
     "data_error": "DataError",
     "bad_params": "笨蛋是不是没写参数啊",
     "alias_header": "歌曲有以下别名：{aliases}",
+    "choose": "匹配到 {count} 首，回复序号或 id 选择：\n{options}",
+    "choose_option": "  {index}. {type} {title} id {id}",
     "format": "\n乐曲名称：{title} \n曲师：{artist} \nid：{id} \nmaster难度：{master_ds} \nma谱师：{master_charter} \nre:master难度：{rem_ds} \nrem谱师：{rem_charter}"
   },
   "router": {
-    "unknown_command": "未知指令：{cmd_name}"
+    "unknown_command": "未知指令：{cmd_name}",
+    "bad_params": "笨蛋参数不够啦～ 用法：{usage}",
+    "too_many_params": "笨蛋参数太多啦～ 用法：{usage}",
+    "ask_params": "还差 {missing} 个参数（{params}）～ 直接发给我就好",
+    "ask_params_noparam": "还差 {missing} 个参数～ 直接发给我就好"
+  },
+  "maimai": {
+    "unparsed": "未解析的指令"
+  },
+  "judge": {
+    "difficulties": ["Basic", "Advanced", "Expert", "Master", "Re:Master"],
+    "header": "《{title}》 {difficulty} {level} · {charter}",
+    "scale": "理论分 {base_score} · break 加成 {bonus_score}",
+    "row_count": "数量",
+    "row_great": "great",
+    "row_good": "good",
+    "row_miss": "miss",
+    "unit": "（每颗音符的扣分，单位 %）\ncp/p 不扣分，故不列行；break 见下表",
+    "break_title": "BREAK {count} 颗",
+    "break_hint": "（每颗：得分+加成 → 扣分）",
+    "no_break": "（本谱面无 BREAK 音符）",
+    "placeholder": "-",
+    "available_line": "  {name} {level}",
+    "bad_difficulty": "难度不认识：{value}～ 可填 0-4 或 绿/黄/红/紫/白",
+    "no_chart": "这首没有{difficulty}谱面～ 它只有：\n{available}"
   },
   "daily": {
-    "help": "我不知道，问desive哦",
+    "help": "Liz 会这些指令：",
+    "help_alias": "（别名：{aliases}）",
+    "help_maimai": "舞萌相关指令用 # 开头（如 #b50），目前尚未接入，会统一回复「未解析的指令」。",
     "greeting": "你好呀！我是Liz～"
   },
   "alias": {
@@ -29,5 +57,17 @@
     ],
     "not_command": "未知指令：“{content}”",
     "error": "处理失败：{error}..."
+  },
+  "commands": {
+    "help": "/help — 查看指令列表",
+    "hello": "/hello — 打个招呼",
+    "random": "/random [最小] [最大] — 掷骰子；给一组值则随机选一个",
+    "id": "/id <歌曲id> — 按 id 查歌",
+    "songdata": "/songdata <歌曲id> <难度> — 查该谱面各判定的扣分（难度 0-4 或 绿/黄/红/紫/白）",
+    "bm": "/bm <别名> — 按别名查歌",
+    "name": "/name <歌名> — 按歌名查歌",
+    "song": "/song <歌名或别名> — 按歌名或别名查歌",
+    "alias_query": "/查询别名 <歌名或别名> — 查这首歌的别名",
+    "alias_add": "/添加别名 <歌名> <别名> — 添加别名（已停用）"
   }
 }

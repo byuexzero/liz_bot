@@ -23,9 +23,22 @@
 
 .dockerignore 匹配语义
 ----------------------
-Docker 用的是 Go 的 filepath.Match,与 shell 通配略有差异。本脚本实现了一个
-**覆盖本项目实际写法**的近似匹配(精确路径 / 目录前缀 / 目录名 / 通配 / `!` 反排除,
-后匹配者胜)。模式变复杂时应重新审视这里。
+本脚本移植了 ``moby/patternmatcher`` 的 ``Pattern.compile()`` 与
+``MatchesOrParentMatches()``,而不是用 fnmatch / .gitignore 的近似 ——
+**这三者的行为不一样,而差异恰好落在最容易出事的地方**。
+
+要点(与 shell 通配、与 .gitignore 都不同):
+
+- ``*`` 和 ``?`` **不跨 "/"**。``*.md`` 只匹配根目录的 .md;
+- 不带 "/" 的名字是**精确匹配**,``__pycache__`` 只排除根目录那一个;
+- 匹配任意层级必须显式写 ``**/``;``**/`` 也能匹配 0 层,
+  所以 ``**/*.md`` 同时覆盖根目录与所有子目录;
+- 模式命中某个目录 => 整棵子树被排除;
+- 后匹配者胜,``!`` 反排除只在已匹配后生效。
+
+历史教训(2026-09-25):旧实现按 .gitignore 语义做近似,比真实 Docker
+**宽松**,于是把"其实会进镜像"的文件报成已排除 —— 方向正是最危险的一侧。
+详见 ``is_excluded()`` 的 docstring。
 
 提交前验证
 ----------
@@ -50,16 +63,17 @@ Docker 用的是 Go 的 filepath.Match,与 shell 通配略有差异。本脚本�
 
 from __future__ import annotations
 
-import fnmatch
 import io
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 try:
@@ -119,24 +133,146 @@ def load_dockerignore(path: Path) -> list[tuple[bool, str]]:
     return pats
 
 
-def _matches(rel: str, pat: str) -> bool:
-    if fnmatch.fnmatch(rel, pat):
-        return True
-    # 目录前缀: `_tools` 排除整个目录
-    if rel == pat or rel.startswith(pat + "/"):
-        return True
-    # 目录名出现在任意层级: `__pycache__`
-    if "/" not in pat and any(seg == pat for seg in rel.split("/")):
-        return True
+# moby/patternmatcher 会把模式编译成这四种匹配之一。
+# `.*+()|{}$` 在 Go 的 filepath.Match 里没有特殊含义,但在正则里有,
+# 所以移植时要转义(与上游 shouldEscape 一致)。
+_ESCAPE_IN_REGEX = frozenset(".+()|{}$")
+
+
+@lru_cache(maxsize=None)
+def _compile_pattern(pat: str) -> tuple[str, object]:
+    """把单个 .dockerignore 模式编译成 ``(matchType, payload)``。
+
+    这是 ``moby/patternmatcher`` 里 ``Pattern.compile()`` 的忠实移植 ——
+    **不要**用 fnmatch 或 .gitignore 的直觉替代它,两者的差异恰恰是本脚本
+    过去给出假绿的原因(见 is_excluded 的说明)。
+
+    matchType 的四种取值与上游一致:``exact`` / ``prefix`` / ``suffix`` /
+    ``regexp``。
+    """
+    reg = "^"
+    detected = "exact"          # 与 Go 一致:默认按精确匹配
+    pos = 0
+    iter_idx = 0                # Go 里 `for i := 0; ...; i++` 的 i
+    n = len(pat)
+
+    while pos < n:
+        ch = pat[pos]
+        pos += 1
+
+        if ch == "*":
+            if pos < n and pat[pos] == "*":
+                # 某个形态的 "**"
+                pos += 1
+                # "**/" 视作 "**":把那个 "/" 吃掉
+                if pos < n and pat[pos] == "/":
+                    pos += 1
+
+                if pos >= n:
+                    # 结尾的 "**":与 .gitignore 对齐,接受一切
+                    if detected == "exact":
+                        detected = "prefix"
+                    else:
+                        reg += ".*"
+                        detected = "regexp"
+                else:
+                    # 中间的 "**":允许任意层数(含 0 层 ——
+                    # 所以 `**/*.md` 也能匹配根目录的 README.md)
+                    reg += "(.*/)?"
+                    detected = "regexp"
+
+                if iter_idx == 0:
+                    detected = "suffix"
+            else:
+                # 单个 "*":任意字符,但**不含 "/"**
+                reg += "[^/]*"
+                detected = "regexp"
+        elif ch == "?":
+            reg += "[^/]"
+            detected = "regexp"
+        elif ch in _ESCAPE_IN_REGEX:
+            reg += "\\" + ch
+        elif ch == "\\":
+            if pos < n:
+                reg += "\\" + pat[pos]
+                pos += 1
+                detected = "regexp"
+            else:
+                reg += "\\"
+        elif ch == "[" or ch == "]":
+            reg += ch
+            detected = "regexp"
+        else:
+            reg += ch
+
+        iter_idx += 1
+
+    if detected == "regexp":
+        return "regexp", re.compile(reg + "$")
+    return detected, pat
+
+
+def _match_one(rel: str, mtype: str, payload: object) -> bool:
+    """单个模式对单条路径的匹配,对应上游 ``Pattern.match()``。"""
+    if mtype == "exact":
+        return rel == payload
+    if mtype == "prefix":
+        return rel.startswith(payload[:-2])          # 去掉结尾的 "**"
+    if mtype == "suffix":
+        suffix = payload[2:]                         # 去掉开头的 "**"
+        if rel.endswith(suffix):
+            return True
+        # `**/foo` 也匹配裸的 `foo`
+        return suffix.startswith("/") and rel == suffix[1:]
+    if mtype == "regexp":
+        return payload.match(rel) is not None
     return False
 
 
 def is_excluded(rel: str, pats: list[tuple[bool, str]]) -> bool:
-    excluded = False
+    """等价于 ``moby/patternmatcher`` 的 ``MatchesOrParentMatches()``。
+
+    ⚠️ **别用 fnmatch / .gitignore 的直觉来理解这里。**
+
+    Docker 的 ``*`` 与 ``?`` **不跨 "/"**(Go 的 filepath.Match 语义),
+    所以:
+
+    - ``*.md``   只匹配**根目录**的 .md,``deploy/x.md`` / ``liz_bot/x.md``
+      都**不会**被排除;
+    - ``__pycache__`` 是精确匹配,只排除**根目录**那一个,
+      ``liz_bot/__pycache__`` 照进不误;
+    - 想匹配任意层级,必须显式写 ``**/``。``**/`` 也能匹配 0 层
+      (即根目录本身),所以 ``**/*.md`` 一次覆盖根目录与所有子目录。
+
+    本函数原先用 ``fnmatch`` + "目录名出现在任意层级" 的近似实现,
+    那是 **.gitignore 的语义**,比真实 Docker **宽松** —— 方向恰好是最危险
+    的那一侧:它会把"其实会进镜像"的文件报成已排除,于是漏检。2026-09-25
+    实测确认 ``Assembly-CSharp``(裸名)在真实 Docker 下**匹配不到**
+    ``maimai/baogao/Assembly-CSharp``,而旧实现报"已排除"。
+
+    后匹配者胜(与 Docker 一致);反排除(``!``)只在已匹配后才生效。
+    """
+    matched = False
+    parent = posixpath.dirname(rel)
+    parent_dirs = parent.split("/") if parent else []
+
     for negate, pat in pats:
-        if _matches(rel, pat):
-            excluded = not negate          # 后匹配者胜
-    return excluded
+        mtype, payload = _compile_pattern(pat)
+        # 与上游一致:命中反排除而尚未匹配、或已匹配又遇到普通规则,都跳过
+        if negate != matched:
+            continue
+
+        m = _match_one(rel, mtype, payload)
+        if not m:
+            # 模式命中任一祖先目录 => 整个子树被排除(所以排除目录很快)
+            for i in range(len(parent_dirs)):
+                m = _match_one("/".join(parent_dirs[: i + 1]), mtype, payload)
+                if m:
+                    break
+
+        if m:
+            matched = not negate
+    return matched
 
 
 # ------------------------------------------------------------------- 取仓库内容
@@ -273,6 +409,14 @@ def main(ref: str = "HEAD") -> None:
             not [k for k in kept if k.endswith(".pyc")],
             "无 .pyc 残留",
         )
+
+        # 文档一律不进镜像（用户 2026-09-25 的要求）。这条同样**不依赖 HEAD**：
+        # 直接拿 .dockerignore 的规则去匹配。于是"规则被删掉"或"写成裸 `*.md`"
+        # 都会立刻失败 —— 后者只排除根目录那几份，下面的子目录样例会漏出来。
+        for rel in ("README.md",
+                    "liz_bot/_已移除功能_舞萌发包.md",
+                    "三套SDGB实现对比.md"):
+            check(is_excluded(rel, pats), f".dockerignore 排除了 {rel}")
 
         # ---------------------------------------------------------- 真跑一遍
         print()
@@ -514,6 +658,124 @@ print(json.dumps(asyncio.run(main()), ensure_ascii=False))
           ".dockerignore 排除了 deploy/docker-compose.yml")
     check(is_excluded("deploy/.env", pats),
           ".dockerignore 排除了 deploy/.env")
+
+    # ------------------------------------------ 工作区本地文件会不会漏进上下文
+    #
+    # **本脚本原先的结构性盲区。** A–E 节用 `git archive <ref>` 复现构建上下文，
+    # 而 git archive **不包含**被 .gitignore 排除的文件。但真实的 `docker build`
+    # 用的是**工作区**，只被 .dockerignore 过滤 —— 于是「gitignore 了、却忘了
+    # dockerignore」的文件在本脚本里**完全看不见**，却实实在在会进镜像。
+    #
+    # 2026-09-25 实测踩到：maimai/DLL/（2358 个文件 / 14.4MB 的反编译游戏代码）
+    # 正是这个状态 —— 本脚本全绿，而构建上下文会平白多传 14.4MB、镜像层里
+    # 还会带上它。同类的还有 .workbuddy-ai/ 与 *.bundle。
+    #
+    # 本节直接走工作区，按 .dockerignore 的语义**剪枝**（与 Docker 一致，
+    # 所以很快），找出「既不在 git 里、也没被 .dockerignore 排除」的文件。
+    print()
+    print("=" * 72)
+    print("G. 工作区里有没有会漏进构建上下文的本地文件")
+    print("=" * 72)
+
+    # 已知例外：本地有、且**故意**要进镜像的。往里加东西必须写清理由。
+    LOCAL_ALLOW = {
+        "liz_bot/emoji": "pic_haddler 实际读取的表情包目录（.dockerignore 刻意保留）",
+    }
+    SIZE_FLOOR = 64 * 1024        # 小于这个体积不报，避免噪音
+
+    tracked_set = set(tracked)
+    leaks: list[tuple[int, str]] = []
+
+    def _scan(d: Path, rel: str) -> None:
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            return
+        for e in entries:
+            r = f"{rel}/{e.name}" if rel else e.name
+            if is_excluded(r, pats):
+                continue                      # 与 Docker 一样：整目录剪枝
+            if e.is_dir():
+                _scan(e, r)
+            elif e.is_file():
+                if r in tracked_set:
+                    continue                  # 在 git 里 = 本来就该进镜像
+                if any(r == a or r.startswith(a + "/") for a in LOCAL_ALLOW):
+                    continue
+                if e.stat().st_size >= SIZE_FLOOR:
+                    leaks.append((e.stat().st_size, r))
+
+    for top in sorted(REPO.iterdir()):
+        if top.name == ".git" or is_excluded(top.name, pats):
+            continue
+        if top.is_dir():
+            _scan(top, top.name)
+        elif top.is_file():
+            if top.name in tracked_set:
+                continue
+            if top.stat().st_size >= SIZE_FLOOR:
+                leaks.append((top.stat().st_size, top.name))
+
+    leaks.sort(reverse=True)
+    check(not leaks,
+          f"没有漏网的本地文件（已剪枝 .dockerignore 排除项，"
+          f"例外:{', '.join(LOCAL_ALLOW)}）",
+          "会进镜像:" + ", ".join(f"{r}({sz // 1024}KB)" for sz, r in leaks))
+
+    # ------------------------------------------------ 匹配语义自检
+    #
+    # 上面每一节的可信度都建立在一个前提上：本脚本的 .dockerignore 匹配与
+    # 真实 Docker 一致。2026-09-25 之前它**不是** —— 旧实现按 .gitignore 语义
+    # 做近似（fnmatch + "裸名匹配任意层级"），比 Docker **宽松**，会把"其实会
+    # 进镜像"的文件报成已排除。方向恰好是最危险的那一侧，而且它让本脚本对
+    # .dockerignore 自身的错误**完全失明**（`Assembly-CSharp` 裸名空转了很久
+    # 都没被发现）。
+    #
+    # 所以这里把匹配器的行为钉死。前六条是 **Docker 官方文档** `.dockerignore`
+    # 一节的原文例子，其余是本项目实际踩到的场景。改动 _compile_pattern /
+    # is_excluded 时，这一节必须保持全绿。
+    print()
+    print("=" * 72)
+    print("H. .dockerignore 匹配语义自检（对齐 moby/patternmatcher）")
+    print("=" * 72)
+
+    semantics: list[tuple[str, list[str], bool, str]] = [
+        # --- Docker 官方文档 .dockerignore 一节的例子（原文语义）---
+        ("somedir/temporary.txt", ["*/temp*"], True, "官方例:排除子目录里的 temp*"),
+        ("somedir/temp", ["*/temp*"], True, "官方例:目录也一并排除"),
+        ("temporary.txt", ["*/temp*"], False, "官方例:根目录的不匹配(* 不跨 /)"),
+        ("somedir/subdir/temporary.txt", ["*/*/temp*"], True, "官方例:两层"),
+        ("tempa", ["temp?"], True, "官方例:temp? 匹配根目录"),
+        ("somedir/tempa", ["temp?"], False, "官方例:temp? 够不到子目录"),
+        # --- 本项目实际踩到的 ---
+        ("README.md", ["**/*.md"], True, "**/*.md 覆盖根目录（0 层）"),
+        ("liz_bot/x.md", ["**/*.md"], True, "**/*.md 覆盖子目录"),
+        ("liz_bot/x.md", ["*.md"], False, "裸 *.md 够不到子目录 —— 别写这个"),
+        ("maimai/baogao/Assembly-CSharp/A.cs", ["**/Assembly-CSharp"], True,
+         "**/Assembly-CSharp 能防改名逃逸"),
+        ("maimai/baogao/Assembly-CSharp/A.cs", ["Assembly-CSharp"], False,
+         "裸 Assembly-CSharp 是空转（2026-09-25 修掉的坑）"),
+        ("liz_bot/__pycache__/x.pyc", ["**/__pycache__"], True, "**/ 覆盖子目录"),
+        ("liz_bot/__pycache__/x.pyc", ["__pycache__"], False, "裸 __pycache__ 是空转"),
+        ("_tools/x.py", ["_tools"], True, "根目录裸名精确匹配（正常用法）"),
+        ("liz_bot/divingfish_songs/music_data.json", ["**/*.json"], True,
+         "**/*.json 会误伤只读数据 —— 只读数据那节才反复警告"),
+        ("liz_bot/divingfish_songs/music_data.json", ["*.json"], False,
+         "裸 *.json 恰好够不到（是巧合，不是保证）"),
+    ]
+
+    def _norm(raw_pats: list[str]) -> list[tuple[bool, str]]:
+        return [(p.startswith("!"), p.lstrip("!").strip().lstrip("/").rstrip("/"))
+                for p in raw_pats]
+
+    bad_sem = [
+        f"{rel} + {raw} -> {is_excluded(rel, _norm(raw))}(期望 {want}):{why}"
+        for rel, raw, want, why in semantics
+        if is_excluded(rel, _norm(raw)) != want
+    ]
+    check(not bad_sem,
+          f"匹配语义 {len(semantics)} 例与 moby/patternmatcher 一致",
+          "不符合:" + "; ".join(bad_sem))
 
     print()
     print("=" * 72)

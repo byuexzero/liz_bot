@@ -34,8 +34,11 @@ from liz_bot import replies
 #: 历史常量名 → 回复文本键。文案在 ``liz_bot/texts/replies.json``。
 #:
 #: 用模块级 ``__getattr__``（PEP 562）保留 ``ADD_FAILED`` / ``ADD_BAD_PARAMS``
-#: 这两个既有常量名（``command_router`` 在用 ``ADD_BAD_PARAMS``，
-#: 部署自检脚本会读 ``ENABLED``），同时让改文件后取值立刻生效。
+#: 这两个既有常量名（部署自检脚本会读 ``ENABLED``），同时让改文件后取值立刻生效。
+#:
+#: ⚠️ 2026-09-25 起 ``command_router`` **不再引用 ADD_BAD_PARAMS** ——
+#: 参数个数校验统一走 ``router.bad_params`` / ``router.too_many_params``
+#: （文案里带正确用法）。这里仅作兼容保留。
 _LEGACY_ALIASES = {
     "ADD_FAILED": "alias.add_failed",
     "ADD_BAD_PARAMS": "alias.add_bad_params",
