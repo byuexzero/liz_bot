@@ -54,10 +54,11 @@
 而不是等群里某条消息才暴露。加指令只需动这两个地方 + 一条 help 文案。
 
 不含任何业务逻辑，具体功能实现见：
-    song_query.py    查歌 + 别名查询
-    judge_detail.py  谱面判定细节（``/songdata``）—— 物量 + 各判定档位的扣分
-    song_alias.py    别名管理 —— **写入已停用，仅保留接口**
-    daily_funcs.py   随机数 / 问候
+    song_query.py      查歌 + 别名查询
+    judge_detail.py    谱面判定细节（``/songdata``）—— 物量 + 各判定档位的扣分
+    score_estimate.py  估分（``/估分``）—— 目标达成率 → 可上传的判定分布
+    song_alias.py      别名管理 —— **写入已停用，仅保留接口**
+    daily_funcs.py     随机数 / 问候
 
 注：``/qr``（扫码查询）已**暂时移除**——它是对舞萌服务端的发包功能。
 它依赖的服务端 API 工具链**不随仓库分发**（见 ``.gitignore``）——
@@ -81,7 +82,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from liz_bot import (
-    daily_funcs, judge_detail, judge_image, pending, replies, song_alias, song_query
+    daily_funcs, estimate_image, judge_detail, judge_image, pending, replies,
+    score_estimate, song_alias, song_query,
 )
 
 # ---------------------------------------------------------------------------
@@ -143,6 +145,9 @@ COMMANDS: tuple[Command, ...] = (
     Command("id", ("id", "id查歌", "songid"), 1, 1),
     # songdata 要「歌曲id + 难度」两个参数：只给 id 时走多轮补参追问难度
     Command("songdata", ("songdata",), 2, 2),
+    # 估分：「歌曲id + 难度 + 百分比」必填，「星级」可选（省略按 0，即不限星级）。
+    # 四个参数都是单个 token，所以设了上限。
+    Command("estimate", ("估分", "estimate"), 3, 5),
     # 以下四类的关键词都可能含空格（曲名 / 别名），故不设参数上限
     Command("bm", ("bm", "别名查歌", "songalias"), 1, None),
     Command("name", ("name", "歌名查歌", "songname"), 1, None),
@@ -406,6 +411,78 @@ def _h_songdata(cmd_params, miss, session_key):
     return judge_detail.judge_detail_reply(cmd_params[0], cmd_params[1])
 
 
+def _estimate_args(cmd_params) -> tuple[str, str, str, str, str, str]:
+    """``/估分`` 的参数整理 → ``(歌曲id, 难度, 百分比, 星级, combo, x小)``。
+
+    三个位置都能省，而且**百分比也能省**（AP / AP+ 根本用不上它）::
+
+        /估分 147 紫 100.0 2 FC     # 全给
+        /估分 147 紫 100.0 2        # 不要 combo
+        /估分 147 紫 100.0 FC       # 不要星级（FC 不可能是星级，无歧义）
+        /估分 147 紫 AP             # 不要百分比（AP 不可能是百分比，无歧义）
+        /估分 147 紫 AP 3           # 不要百分比，要 3★
+        /估分 147 紫 AP 3小         # x小：break 的 3 颗小P（星级随之确定）
+        /估分 147 紫 3小            # 同上，x小 也不可能是百分比
+
+    ``x小`` / ``x小P`` **与位置无关**：它同时取代百分比与星级，出现在哪一格
+    都认得（见 :func:`liz_bot.score_estimate.parse_break_p`）。
+
+    其余参数走「**位置优先，只在无歧义时才顺移**」：某个位置放不下时才往后挪，
+    绝不往回填。所以 ``/估分 147 紫 2 AP`` 里的 ``2`` 一定是星级（``2`` 既是
+    合法百分比也是合法 combo 等级，按位置走，**不猜**）。
+
+    整理不出来的值照样往下传，由 :func:`liz_bot.score_estimate.estimate`
+    报出**具体**的错（``bad_percent`` / ``bad_stars`` / ``bad_combo``）。
+
+    文字版与图片版共用这一份 —— 两边各写一遍必然漂移，而漂移的后果是
+    「图里和文字里是不同的记录」。
+    """
+    rest = list(cmd_params[2:])
+    percent = stars = combo = break_p = ""
+
+    def is_combo(tok: str) -> bool:
+        return score_estimate.parse_combo(tok) not in (None, score_estimate.COMBO_ANY)
+
+    # x小 / x小P 先摘出来：它出现在哪一格都算
+    for i, tok in enumerate(rest):
+        if score_estimate.parse_break_p(tok) is not None:
+            break_p = rest.pop(i)
+            break
+
+    if rest:
+        tok = rest.pop(0)
+        if score_estimate.parse_percent(tok) is not None:
+            percent = tok
+        elif is_combo(tok):
+            combo = tok
+        else:
+            percent = tok                     # 交给 estimate() 报 bad_percent
+    if rest:
+        tok = rest.pop(0)
+        if score_estimate.parse_stars(tok) is not None:
+            stars = tok
+        elif not combo and is_combo(tok):
+            combo = tok
+        else:
+            stars = tok                       # 交给 estimate() 报 bad_stars
+    if rest:
+        combo = rest.pop(0)                   # 只剩 combo 这一格
+
+    return cmd_params[0], cmd_params[1], percent, stars, combo, break_p
+
+
+def _h_estimate(cmd_params, miss, session_key):
+    """``/估分 <歌曲id> <难度> <百分比> [星级] [combo]``。
+
+    参数整理见 :func:`_estimate_args`。``session_key`` 透传下去，估分结果会
+    按会话存进一轮缓存（见 :data:`liz_bot.score_estimate.CACHE`）。
+    """
+    song_id, difficulty, percent, stars, combo, break_p = _estimate_args(cmd_params)
+    return score_estimate.estimate_reply(
+        song_id, difficulty, percent, stars, combo, break_p, session_key=session_key,
+    )
+
+
 def _h_alias_query(cmd_params, miss, session_key):
     return _reply_variants(
         cmd_params, "alias_query", song_query.BY_ANY, session_key, miss
@@ -442,6 +519,7 @@ _HANDLERS: dict[str, Callable[[list, str, "str | None"], str]] = {
     "random": _h_random,
     "id": _h_id,
     "songdata": _h_songdata,
+    "estimate": _h_estimate,
     "bm": _song_handler("bm", song_query.BY_ALIAS),
     "name": _song_handler("name", song_query.BY_NAME),
     "song": _song_handler("song", song_query.BY_ANY),
@@ -474,16 +552,27 @@ def help_reply() -> str:
     文案全部来自 ``replies.json``（``daily.help`` 表头 + 每条 ``commands.<key>``
     + ``daily.help_maimai`` 尾注），这里只负责拼接与**一致性断言**。
 
+    **参数多的指令可以用简短写法**：若 ``commands.<key>_brief`` 存在就用它
+    （典型是把一长串位置参数收成 ``<多参数>``，免得整行在手机端折行）。
+    ``commands.<key>`` 始终保留**完整签名** —— 补参追问要按它派生参数名
+    （:func:`_param_names`），参数个数出错时也拿它当 usage。所以简短写法只影响
+    ``/help`` 这一处，报错提示依旧是全的。
+
     :raises RuntimeError: 某条指令的 help 文案与它的规范名对不上
         （典型场景：改了 ``COMMANDS`` 里的名字，忘了改 ``replies.json``）
     :raises RepliesError: ``replies.json`` 缺少对应键
     """
     lines: list[str] = []
+    known = set(replies.keys())
     for entry in COMMANDS:
         if not entry.listed:
             continue
 
-        text = replies.text(f"commands.{entry.key}")
+        # ``_brief`` 是**可选**的：有就用，没有就退回完整签名。
+        # ⚠️ 不能用 ``replies.get`` 探路 —— 它缺键时是抛异常而不是返回 None。
+        brief_key = f"commands.{entry.key}_brief"
+        text = (replies.text(brief_key) if brief_key in known
+                else replies.text(f"commands.{entry.key}"))
         expected = f"/{entry.names[0]}"
         if not text.startswith(expected):
             raise RuntimeError(
@@ -516,13 +605,25 @@ def help_reply() -> str:
 #: ⚠️ **新增指令若引入了新的失败文案，必须登记到这里** —— 否则用户一旦输错
 #:    就再也接不上话（只能把整条指令重打一遍）。这正是 2026-09-26 修的那个
 #:    用户反馈的 bug 的成因。test_command_table.py 里有守卫：这里每个键
-#:    都必须在 replies 里存在，且确实被某条指令返回过。
+#:    都必须在 ``replies`` 的 ``_SCHEMA`` 里登记为字符串键（写错键名 / 忘了
+#:    往 replies.json 加文案都会在那里报出来）。
 _FAILURE_KEYS = (
     "song.not_found",          # 查歌：没这首歌
     "judge.bad_difficulty",    # /songdata：难度不认识
     "judge.no_chart",          # /songdata：这首歌没有该难度
     "router.bad_params",       # 参数太少（消歧路径把输入当关键词重跑时可能触发）
     "router.too_many_params",  # 参数太多（补参时一次给多了）
+    # ---- /估分（见 liz_bot/score_estimate.py）----
+    "estimate.bad_percent",        # 百分比看不懂
+    "estimate.bad_stars",          # 星级看不懂
+    "estimate.bad_combo",          # combo 等级看不懂
+    "estimate.bad_break_p",        # x小 写法看不懂 / 超出 break 数
+    "estimate.combo_conflict",     # x小 与别的 combo 等级冲突
+    "estimate.need_percent",       # 没给百分比（只有 AP / AP+ 可以不给）
+    "estimate.too_high",           # 目标超过 101%
+    "estimate.no_solution",        # 没找到可行分布
+    "estimate.combo_unreachable",  # 该 combo 等级下取不到解
+    "estimate.empty_chart",        # 谱面没有可判定的音符
 )
 
 #: 模板里的占位符，形如 ``{value}``。只用于**切分**失败文案（见 :func:`_failure_matcher`）。
@@ -663,24 +764,42 @@ def _execute(
 def _render_rich(entry: Command, cmd_params: list, fallback: str) -> "RichReply | None":
     """能出图的指令在这里出图；其余（以及渲染失败）返回 ``None``，照旧发文本。
 
-    目前只有 ``songdata``（谱面判定细节）—— 它是一张 5 列 × 4 行的表，靠空格
-    对齐在 QQ 的比例字体下**必然错位**，是最需要图片的一个。
+    ==================  ==================================================
+    指令 key            图片内容
+    ==================  ==================================================
+    ``songdata``        谱面判定细节（5 列 × 4 行的扣分表）
+    ``estimate``        估分结果（判定分布 + 可上传字段）
+    ==================  ==================================================
 
-    **不抛异常**：:func:`liz_bot.judge_image.render_png` 在 PIL 缺失 / 字体缺失 /
-    曲库读不动时一律返回 ``None``，这里就顺势降级。图片是锦上添花，
-    不该让查歌功能跟着挂。
+    两条都是**天然表格**、靠空格对齐在 QQ 的比例字体下必然错位的，
+    也是最需要图片的。
+
+    **不抛异常**：两个 ``render_png`` 在 PIL 缺失 / 字体缺失 / 曲库读不动 /
+    取不到解 / 编码失败时一律返回 ``None``，这里就顺势降级。图片是锦上添花，
+    不该让指令本身跟着挂。
     """
-    if entry.key != "songdata":
+    if entry.key == "songdata":
+        png = judge_image.render_png(cmd_params[0], cmd_params[1])
+        # 文件名保持 ``judge_`` 前缀不变 —— 它只影响服务端侧的记录，
+        # 但改它没有任何收益，反而会让既有的排查习惯失效。
+        prefix = "judge"
+    elif entry.key == "estimate":
+        # 参数整理与 _h_estimate 共用 _estimate_args，
+        # 保证图里和文字里是同一份记录
+        song_id, difficulty, percent, stars, combo, break_p = _estimate_args(cmd_params)
+        png = estimate_image.render_png(
+            song_id, difficulty, percent, stars, combo, break_p)
+        prefix = "estimate"
+    else:
         return None
 
-    png = judge_image.render_png(cmd_params[0], cmd_params[1])
     if png is None:
         return None
 
     # 文件名带上曲目 id 与难度，方便服务端侧排查（不含用户输入之外的信息）
     return RichReply(
         png=png,
-        filename=f"judge_{cmd_params[0]}_{cmd_params[1]}.png",
+        filename=f"{prefix}_{cmd_params[0]}_{cmd_params[1]}.png",
         fallback=fallback,
     )
 

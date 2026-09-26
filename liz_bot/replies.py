@@ -124,6 +124,49 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "judge.available_line": (str, ("name", "level")),
     "judge.bad_difficulty": (str, ("value",)),
     "judge.no_chart": (str, ("difficulty", "available")),
+    # ---- 估分（/估分，见 liz_bot/score_estimate.py）----
+    # 给「目标达成率 + DX 星级」，反推可上传的判定分布。
+    "estimate.result": (str, ("target", "actual")),
+    # 副标题（曲名单独画，所以与 judge.header 分开一份）
+    "estimate.sub": (str, ("difficulty", "level", "charter")),
+    "estimate.stars": (str, ("stars", "want", "dx", "max_dx")),
+    # combo 等级是「恰好」约束：{combo} 是要求（FC / FC+ / AP / AP+ / 无），
+    # {label} 是这份判定分布实际会显示的连击状态（两者必然一致）。
+    "estimate.combo_req": (str, ("combo", "label")),
+    # AP / AP+ 会忽略百分比与星级（见 score_estimate.COMBO_LOCKED），
+    # 结果行里的「目标」是算法自己取的上限，必须说明白，否则用户以为是他要的数
+    "estimate.ignored": (str, ("combo",)),
+    "estimate.scale": (str, ("normal", "bonus")),
+    # 判定明细表的列头（CP/P/Gr/Gd/Ms 是 ASCII，不进文案）
+    "estimate.table_zone": (str, ()),
+    "estimate.table_head": (str, ()),
+    "estimate.upload_title": (str, ()),
+    # {name} 是协议字段名（ASCII，代码里补齐宽度），{value} 是它的值
+    "estimate.upload_line": (str, ("name", "value")),
+    # 连击状态：PlayComboFlagID 为 0 时只有前一个键可用
+    "estimate.combo_none": (str, ()),
+    "estimate.combo": (str, ("flag", "label")),
+    # gap = 实际达成率 - 目标（恒 ≥ 0，单位 1/10000 %）
+    "estimate.gap_zero": (str, ()),
+    "estimate.gap_note": (str, ("gap",)),
+    # gap 超过 TOLERANCE（0.1%）时**必须显式告警** —— 例如 AP 等级下
+    # 普通音符不扣分，达成率只能是 101% - 25k/加成理论分 这一串离散值，
+    # 100.0% 根本取不到，只能给最接近的。
+    "estimate.gap_warn": (str, ("gap",)),
+    # 参数 / 求解失败文案（必须登记进 command_router._FAILURE_KEYS）
+    "estimate.bad_percent": (str, ("value",)),
+    "estimate.bad_stars": (str, ("value",)),
+    "estimate.bad_combo": (str, ("value",)),
+    # x小 / x小P 写法（AP 下 break 的小 P 数）
+    "estimate.bad_break_p": (str, ("value",)),
+    "estimate.combo_conflict": (str, ("combo",)),
+    "estimate.break_p_note": (str, ("count",)),
+    "estimate.need_percent": (str, ()),
+    "estimate.too_high": (str, ()),
+    "estimate.no_solution": (str, ()),
+    "estimate.combo_unreachable": (str, ("combo",)),
+    "estimate.empty_chart": (str, ()),
+    "estimate.unit": (str, ()),
     # ---- 日常指令 ----
     "daily.help": (str, ()),
     "daily.help_alias": (str, ("aliases",)),
@@ -147,6 +190,11 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "commands.random": (str, ()),
     "commands.id": (str, ()),
     "commands.songdata": (str, ()),
+    "commands.estimate": (str, ()),
+    # 可选：``/help`` 列表里的**简短写法**。参数多的指令用 ``<多参数>`` 代替
+    # 那一长串位置参数，免得一行撑到折行；完整签名仍在 ``commands.estimate``
+    # 里（补参追问要按它派生参数名，报错也拿它当 usage）。
+    "commands.estimate_brief": (str, ()),
     "commands.bm": (str, ()),
     "commands.name": (str, ()),
     "commands.song": (str, ()),

@@ -567,25 +567,22 @@ print("=" * 72)
 print("E. 语法编译")
 print("=" * 72)
 
-targets = [
-    "run.py",
-    "liz_bot/runtime_paths.py",
-    "liz_bot/healthz.py",
-    "liz_bot/song_paths.py",
-    "liz_bot/qqgroupbot.py",
-    "liz_bot/qqgroup-ai-bot.py",
-    "liz_bot/replies.py",
-    "liz_bot/song_alias.py",
-    "liz_bot/song_query.py",
-    "liz_bot/command_router.py",
-    "liz_bot/command_handler.py",
-    "liz_bot/daily_funcs.py",
-]
+# ⚠️ 别写死清单。原先这里只列了 12 个文件，`judge_detail` / `judge_image` /
+# `score_estimate` / `estimate_image` / `pending` / `media_upload` / `text_layout`
+# 全都不在 —— 而 `command_router` 在 import 期就导入其中好几个，
+# 它们语法错误会让 bot 直接起不来，这个「部署面语法检查」却看不见。
+# 改成 glob：以后新增模块自动纳入，不需要记得回来补一行。
+targets = ["run.py", *sorted(
+    p.relative_to(REPO).as_posix() for p in (REPO / "liz_bot").glob("*.py")
+)]
 proc = subprocess.run(
     PY + ["-m", "py_compile", *targets],
     cwd=str(REPO), capture_output=True, text=True,
 )
 check(proc.returncode == 0, f"py_compile 通过（{len(targets)} 个文件）", proc.stderr.strip())
+check(len(targets) >= 20,
+      f"编译清单覆盖 liz_bot 全部模块（实际 {len(targets)} 个文件）",
+      f"liz_bot 下有 {len(list((REPO / 'liz_bot').glob('*.py')))} 个 .py")
 
 print()
 print("=" * 72)
