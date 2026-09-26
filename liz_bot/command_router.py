@@ -82,8 +82,8 @@ from dataclasses import dataclass
 from typing import Callable
 
 from liz_bot import (
-    daily_funcs, estimate_image, judge_detail, judge_image, pending, replies,
-    score_estimate, song_alias, song_query,
+    daily_funcs, estimate_image, help_image, judge_detail, judge_image, pending,
+    replies, score_estimate, song_alias, song_query,
 )
 
 # ---------------------------------------------------------------------------
@@ -575,35 +575,67 @@ if set(_HANDLERS) != {entry.key for entry in COMMANDS}:
 # 帮助
 # ---------------------------------------------------------------------------
 
-def help_reply() -> str:
-    """``/help`` 的回复 —— 由 :data:`COMMANDS` 渲染出的指令列表。
+#: ``commands.<key>`` 文案里「用法」与「说明」之间的分隔符（U+2014 前后各一个空格）。
+#:
+#: 它同时是**格式约定**：每条文案都必须是 ``/用法 <参数> — 说明``。
+#: :func:`help_rows` 按它切成两半（图片版要分两列排），切不出来就直接报错 ——
+#: 见那里的说明。
+_HELP_SEP = " \u2014 "
 
-    结构是「表头 + 每条指令一行 + 空行 + 舞萌命名空间说明」：
-    末尾那段固定文案（``daily.help_maimai``）告诉用户 ``#`` 前缀的存在，
-    否则 ``#b50`` 得到一句「未解析的指令」会让人莫名其妙。
 
-    文案全部来自 ``replies.json``（``daily.help`` 表头 + 每条 ``commands.<key>``
-    + ``daily.help_maimai`` 尾注），这里只负责拼接与**一致性断言**。
+@dataclass(frozen=True)
+class HelpRow:
+    """``/help`` 里的一行 —— 用法、说明、别名。
 
-    **参数多的指令可以用简短写法**：若 ``commands.<key>_brief`` 存在就用它
-    （只**缩短参数名**、不省略参数，免得整行在手机端折行）。
-    ``commands.<key>`` 始终保留**完整签名** —— 补参追问要按它派生参数名
-    （:func:`_param_names`），参数个数出错时也拿它当 usage。所以简短写法只影响
-    ``/help`` 这一处，报错提示依旧是全的。
+    **文字版与图片版共用这一份**：:func:`help_reply` 把它拼回原样的字符串，
+    :func:`liz_bot.help_image.render_png` 把它排成两列表格。
+    两边各解析一次必然漂移，而漂移的后果是「图里和文字里是两份不同的帮助」。
+
+    :param usage: 用法部分，例如 ``/songdata <歌曲id> <难度>``（含开头的 ``/``）
+    :param desc: 说明部分，例如 ``查该谱面各判定的扣分（…）``
+    :param aliases: 该指令的别名（``names[1:]``，不含规范名）；无别名时为空元组
+    """
+
+    usage: str
+    desc: str
+    aliases: tuple[str, ...]
+
+    @property
+    def alias_line(self) -> str:
+        """``（别名：…）`` 那一行；无别名时是**空串**。
+
+        ⚠️ 文字版（:func:`help_reply`）与图片版
+        （:func:`liz_bot.help_image.render_png`）**都读它** —— 别名那一行
+        的拼法只此一处，免得一边写「（别名：cbm）」另一边什么都不写。
+        图片版之所以不自己拼，是因为它不能 import 本模块（会循环导入），
+        只能拿到这个已经算好的字符串。
+        """
+        return help_alias_line(self.aliases)
+
+
+def help_rows() -> tuple[HelpRow, ...]:
+    """``/help`` 的**结构化**内容 —— 只含 ``listed=True`` 的指令，顺序同 :data:`COMMANDS`。
+
+    每行的来源是 ``commands.<key>_brief``（存在则用）或 ``commands.<key>``，
+    形如 ``/用法 <参数> — 说明``，按**第一个** `` — `` 切成两半。
+    别名来自 :class:`Command` 的 ``names[1:]``，**不从文案里抠**。
+
+    **参数多的指令可以用简短写法**：``commands.<key>_brief`` 只**缩短参数名**、
+    不省略参数（免得整行在手机端折行）。``commands.<key>`` 始终保留**完整签名**
+    —— 补参追问要按它派生参数名（:func:`_param_names`），参数个数出错时也拿它
+    当 usage。所以简短写法只影响 ``/help`` 这一处，报错提示依旧是全的。
 
     ⚠️ 2026-09-26 用户要求：``/估分`` 的参数列表**必须列出 dx星级 与 combo**
     （此前收成 ``<多参数>``，用户看不出还能给什么）—— 简短写法只许缩短名字，
     不许把可选参数藏起来。
 
-    ``/help`` 在 ``rich=True`` 时走图片版（见 :func:`_render_rich` 的 ``help``
-    分支），这里返回的文字版始终是**兜底**。
-
-    :raises RuntimeError: 某条指令的 help 文案与它的规范名对不上
-        （典型场景：改了 ``COMMANDS`` 里的名字，忘了改 ``replies.json``）
+    :raises RuntimeError: 某条指令的文案与它的规范名对不上，或**缺分隔符**
+        （典型场景：改了 ``COMMANDS`` 里的名字 / 手写文案时漏了 `` — ``，
+        忘了同步 ``replies.json``）
     :raises RepliesError: ``replies.json`` 缺少对应键
     """
-    lines: list[str] = []
     known = set(replies.keys())
+    rows: list[HelpRow] = []
     for entry in COMMANDS:
         if not entry.listed:
             continue
@@ -621,18 +653,55 @@ def help_reply() -> str:
                 f"改指令名时请一并改 liz_bot/texts/replies.json。"
             )
 
-        aliases = entry.names[1:]
-        if aliases:
-            text += replies.text("daily.help_alias", aliases=_ALIAS_SEP.join(aliases))
-        lines.append(text)
+        # ⚠️ 分隔符是**格式约定**，缺了要立刻报错而不是「整行都当用法」——
+        # 后者会让图片版默默排出一列错位的表，而且不报任何错。
+        usage, sep, desc = text.partition(_HELP_SEP)
+        if not sep or not desc:
+            raise RuntimeError(
+                f"help 文案缺分隔符：commands.{entry.key} = {text!r}，"
+                f"格式必须是「/用法 <参数>{_HELP_SEP}说明」。"
+                f"图片版要靠它分两列，改文案时别把 {_HELP_SEP!r} 删掉。"
+            )
 
-    return (
-        replies.text("daily.help")
-        + "\n"
-        + "\n".join(lines)
-        + "\n\n"
-        + replies.text("daily.help_maimai")
-    )
+        rows.append(HelpRow(usage=usage, desc=desc, aliases=entry.names[1:]))
+    return tuple(rows)
+
+
+def help_title() -> str:
+    """``/help`` 的标题（``daily.help``）。"""
+    return replies.text("daily.help")
+
+
+def help_note() -> str:
+    """``/help`` 的尾注（``daily.help_maimai``）—— 说明 ``#`` 前缀的存在。
+
+    缺了它，用户看到 ``#b50`` 得到一句「未解析的指令」会莫名其妙。
+    """
+    return replies.text("daily.help_maimai")
+
+
+def help_alias_line(aliases: tuple[str, ...]) -> str:
+    """把别名列表渲染成 ``daily.help_alias`` 那一行（无别名时返回空串）。
+
+    文字版与图片版都走这里 —— 免得一边写「（别名：cbm）」另一边什么都不写。
+    """
+    if not aliases:
+        return ""
+    return replies.text("daily.help_alias", aliases=_ALIAS_SEP.join(aliases))
+
+
+def help_reply() -> str:
+    """``/help`` 的文字版 —— 由 :func:`help_rows` 拼回「表头 + 每行一条 + 尾注」。
+
+    ⚠️ **输出必须逐字节稳定** —— ``test_refactor_equivalence.py`` 拿它与重构前的
+    归档件对比，改排版会直接判失败。所以这里只做「把结构化数据拼回原样」，
+    不顺手调整空格、分隔符或换行。
+    """
+    lines = [
+        f"{row.usage}{_HELP_SEP}{row.desc}" + row.alias_line
+        for row in help_rows()
+    ]
+    return help_title() + "\n" + "\n".join(lines) + "\n\n" + help_note()
 
 
 # ---------------------------------------------------------------------------
@@ -811,39 +880,47 @@ def _render_rich(entry: Command, cmd_params: list, fallback: str) -> "RichReply 
     ==================  ==================================================
     ``songdata``        谱面判定细节（5 列 × 4 行的扣分表）
     ``estimate``        估分结果（判定分布 + 可上传字段）
+    ``help``            指令列表（用法 / 说明两列）
     ==================  ==================================================
 
-    两条都是**天然表格**、靠空格对齐在 QQ 的比例字体下必然错位的，
-    也是最需要图片的。
+    前两条是**天然表格**、靠空格对齐在 QQ 的比例字体下必然错位，也最需要图片。
+    ``help`` 的理由不同：它的每行都是「用法 — 长说明」，在手机气泡里折行之后
+    完全看不出哪句说明属于哪条指令 —— 见 :mod:`liz_bot.help_image`。
 
-    **不抛异常**：两个 ``render_png`` 在 PIL 缺失 / 字体缺失 / 曲库读不动 /
+    **不抛异常**：三个 ``render_png`` 在 PIL 缺失 / 字体缺失 / 曲库读不动 /
     取不到解 / 编码失败时一律返回 ``None``，这里就顺势降级。图片是锦上添花，
     不该让指令本身跟着挂。
+
+    ``help_rows()`` 是**唯一**会在这里抛异常的东西（文案与指令表对不上）。
+    刻意**不**吞掉它 —— 那是开发期就该炸出来的配置错误，而且 ``reply_text``
+    在 rich 之外的那条路上本来就会调到它，吞掉只会让问题更难发现。
     """
     if entry.key == "songdata":
         png = judge_image.render_png(cmd_params[0], cmd_params[1])
         # 文件名保持 ``judge_`` 前缀不变 —— 它只影响服务端侧的记录，
         # 但改它没有任何收益，反而会让既有的排查习惯失效。
-        prefix = "judge"
+        filename = f"judge_{cmd_params[0]}_{cmd_params[1]}.png"
     elif entry.key == "estimate":
         # 参数整理与 _h_estimate 共用 _estimate_args，
         # 保证图里和文字里是同一份记录
         song_id, difficulty, percent, stars, combo, break_p = _estimate_args(cmd_params)
         png = estimate_image.render_png(
             song_id, difficulty, percent, stars, combo, break_p)
-        prefix = "estimate"
+        filename = f"estimate_{cmd_params[0]}_{cmd_params[1]}.png"
+    elif entry.key == "help":
+        # 数据（help_rows）在这里取、渲染在 help_image 里做 —— 反过来让
+        # help_image 去 import command_router 会形成循环导入。
+        # 缓存也在 help_image 内部，键就是这三份内容（见那里的说明）。
+        png = help_image.render_png(help_rows(), help_title(), help_note())
+        # help 没有参数，文件名不带曲目 id（也不该带 —— 它不是「某首歌」的图）
+        filename = "help.png"
     else:
         return None
 
     if png is None:
         return None
 
-    # 文件名带上曲目 id 与难度，方便服务端侧排查（不含用户输入之外的信息）
-    return RichReply(
-        png=png,
-        filename=f"{prefix}_{cmd_params[0]}_{cmd_params[1]}.png",
-        fallback=fallback,
-    )
+    return RichReply(png=png, filename=filename, fallback=fallback)
 
 
 async def handle_maimai_command(cmd_name, cmd_params) -> str:

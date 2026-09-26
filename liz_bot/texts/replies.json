@@ -77,6 +77,8 @@
   "daily": {
     "help": "Liz 会这些指令：",
     "help_alias": "（别名：{aliases}）",
+    "help_usage": "用法",
+    "help_desc": "说明",
     "help_maimai": "舞萌相关指令用 # 开头（如 #b50），目前尚未接入，会统一回复「未解析的指令」。",
     "greeting": "你好呀！我是Liz～"
   },

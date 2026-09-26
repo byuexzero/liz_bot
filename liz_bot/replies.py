@@ -188,6 +188,10 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # ---- 日常指令 ----
     "daily.help": (str, ()),
     "daily.help_alias": (str, ("aliases",)),
+    # /help 图片版的表头（见 liz_bot/help_image.py）。
+    # 文字版没有表头 —— 它靠「/用法 — 说明」的行内结构，加了反而更挤。
+    "daily.help_usage": (str, ()),
+    "daily.help_desc": (str, ()),
     # /help 末尾的舞萌命名空间说明（见 command_router.help_reply）
     "daily.help_maimai": (str, ()),
     "daily.greeting": (str, ()),
