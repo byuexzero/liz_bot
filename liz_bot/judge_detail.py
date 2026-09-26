@@ -176,6 +176,21 @@ DIFFICULTY_ALIASES = {
     "4": 4, "remaster": 4, "remas": 4, "re": 4, "白": 4, "白谱": 4, "里": 4,
 }
 
+#: **名字型**难度写法（``绿`` / ``master`` …）—— 即 :data:`DIFFICULTY_ALIASES`
+#: 里**去掉纯数字** ``0``-``4`` 之后剩下的那些。
+#:
+#: 用途只有一个：``/songdata`` / ``/估分`` 的**乐曲混合检索**要找「难度在哪一格」
+#: 当锚点（歌名可能含空格，不能按位置硬切，见
+#: :func:`liz_bot.command_router._split_song_query`）。
+#:
+#: ⚠️ **为什么锚点必须是名字型**：数字 ``0``-``4`` 与百分比、DX 星级、combo
+#: 等级**撞车** —— ``/估分 147 2 100.0`` 里的 ``2`` 是难度还是星级？
+#: 名字型（绿黄红紫白 / basic adv exp mas remas）不可能出现在别的参数位，
+#: 拿它当锚点**无歧义**。数字难度照旧可用，只是不能兼任锚点。
+NAMED_DIFFICULTIES = frozenset(
+    name for name in DIFFICULTY_ALIASES if not name.isdigit()
+)
+
 
 # ---------------------------------------------------------------------------
 # 解析与计算

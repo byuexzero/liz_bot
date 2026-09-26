@@ -77,14 +77,17 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from liz_bot import (
     daily_funcs, estimate_image, help_image, judge_detail, judge_image, pending,
     replies, score_estimate, song_alias, song_query,
 )
+
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 指令表 —— 唯一事实来源
@@ -143,11 +146,14 @@ COMMANDS: tuple[Command, ...] = (
     Command("random", ("random",), 0, None),
     # id 的参数是单个数字，多给就是写错了 —— 设上限，明确报错
     Command("id", ("id", "id查歌", "songid"), 1, 1),
-    # songdata 要「歌曲id + 难度」两个参数：只给 id 时走多轮补参追问难度
-    Command("songdata", ("songdata",), 2, 2),
-    # 估分：「歌曲id + 难度 + 百分比」必填，「星级」可选（省略按 0，即不限星级）。
-    # 四个参数都是单个 token，所以设了上限。
-    Command("estimate", ("估分", "estimate"), 3, 5),
+    # songdata 要「歌曲 + 难度」两个参数：只给一个时走多轮补参追问难度。
+    # ⚠️ **不限参数个数**：第一个参数是乐曲混合检索，歌名可能含空格
+    #    （``/songdata true love song 紫``），设上限会被 too_many_params 拦下。
+    #    「参数给多了」改由 _split_song_query 判 —— 它认得难度锚点，比数个数准。
+    Command("songdata", ("songdata",), 2, None),
+    # 估分：「歌曲 + 难度 + 百分比」必填，「dx星级」「combo等级」可选。
+    # 同样**不限个数**，理由见上面 songdata 那条（``/估分 true love song 紫 100.0``）。
+    Command("estimate", ("估分", "estimate"), 3, None),
     # 以下四类的关键词都可能含空格（曲名 / 别名），故不设参数上限
     Command("bm", ("bm", "别名查歌", "songalias"), 1, None),
     Command("name", ("name", "歌名查歌", "songname"), 1, None),
@@ -329,26 +335,216 @@ def _keyword_variants(cmd_params):
     return [cmd_params[0]]
 
 
-def _render_hit(entry_key: str, hit: dict) -> str:
+# ---------------------------------------------------------------------------
+# 乐曲混合检索 —— /songdata 与 /估分 的第一个参数
+# ---------------------------------------------------------------------------
+
+#: 走**乐曲混合检索**的指令 —— 第一个参数不再只认纯数字 id，歌名 / 别名都行。
+#:
+#: 与 ``/bm`` / ``/name`` / ``/song`` 的区别：那三条指令**整行都是关键词**，
+#: 而这两条后面还跟着难度等参数，所以必须先把「歌名」与「其余参数」切开 ——
+#: 见 :func:`_split_song_query`。
+MIXED_SONG_KEYS = ("songdata", "estimate")
+
+#: ``/估分`` 里「难度及其后」最多能有几个 token：难度 + 百分比 + dx星级 + combo。
+#: ``x小`` 与 combo 等级互斥（都定 combo），所以不会再多一格。
+_ESTIMATE_MAX_REST = 4
+
+
+class SongSplit(NamedTuple):
+    """``/songdata`` / ``/估分`` 的参数切分结果。
+
+    :param query: 歌曲检索词 —— 纯数字当 id，否则按「歌名 → 别名」查
+        （走 :data:`liz_bot.song_query.BY_ANY`，与 ``/song`` 同一套）
+    :param rest: 难度及其后的参数，**原样透传**给下游
+        （``/songdata`` 只取 ``rest[0]`` 当难度；``/估分`` 交给
+        :func:`_estimate_args` 整理）
+    :param error: 非 ``None`` 表示**切不出来**，直接回这段文案，不再检索。
+        目前只有「参数给多了」会走到这里。
+    """
+
+    query: str
+    rest: tuple[str, ...]
+    error: str | None
+
+
+def _is_named_difficulty(token: str) -> bool:
+    """是不是**名字型**难度写法（``紫`` / ``master`` …）—— 不含数字 ``0``-``4``。
+
+    混合检索找难度锚点时只认名字型，理由见
+    :data:`liz_bot.judge_detail.NAMED_DIFFICULTIES`：数字与百分比 / 星级 /
+    combo 撞车，当锚点会猜错。
+    """
+    if not isinstance(token, str):
+        return False
+    return token.strip().lower() in judge_detail.NAMED_DIFFICULTIES
+
+
+def _split_song_query(entry_key: str, cmd_params: list) -> SongSplit:
+    """把 ``/songdata`` / ``/估分`` 的参数切成 ``(歌曲检索词, 难度及其后)``。
+
+    为什么需要这一步
+    ----------------
+    这两个指令原先按**位置**读参数（``cmd_params[0]`` 是 id、``cmd_params[1]``
+    是难度），于是曲名里的空格会把难度挤走 —— ``/songdata true love song 紫``
+    根本没法用。现在第一个参数改为**混合检索**（歌名 / 别名 / 纯数字 id），
+    难度则靠**锚点**找出来。
+
+    切分规则（两条候选，**旧行为永远优先**，所以老输入一个都不变）
+    ------------------------------------------------------------
+    ``/songdata``::
+
+        <歌曲> <难度>                    ← 恰好 2 个 token：原样返回（旧行为）
+        <含空格的歌名…> <难度>            ← 末 token 是难度 ⇒ 难度是它，前面全是歌名
+
+    ``/估分``::
+
+        <歌曲> <难度> <其余…>             ← 第 2 个 token 能当难度：原样返回（旧行为）
+        <含空格的歌名…> <难度> <其余…>     ← 否则找**第一个名字型难度**当锚点
+
+    ⚠️ ``/估分`` 的锚点扫描**只认名字型**（见 :func:`_is_named_difficulty`）。
+    所以「歌名含空格」时难度请写名字（绿/黄/红/紫/白）；写数字 ``2`` 会被当成
+    百分比或星级。这是刻意的取舍 —— 宁可让一条冷门写法不可用，也不能猜错谱面。
+
+    参数给多了怎么办
+    ----------------
+    **锚点明确时**（``/songdata 143 紫 100`` 的第 2 个 token 就是难度、
+    ``/估分 143 紫 100 2 FC 3小`` 同样）多出来的 token 一律判为误输，
+    回 :data:`liz_bot.replies` 的 ``router.too_many_params``。
+    锚点找不到时**不报个数错**，而是按旧行为切、把值原样交给下游 ——
+    这样 ``/songdata 143 100`` 依旧得到「难度不认识（100）」，比一句
+    「参数太多」有用得多。
+    """
+    count = len(cmd_params)
+
+    if entry_key == "songdata":
+        if count == 2:
+            # 旧行为：<歌曲id> <难度>。难度认不认识交给 judge_detail 报错。
+            return SongSplit(cmd_params[0], (cmd_params[1],), None)
+        if count > 2:
+            if judge_detail.resolve_difficulty(cmd_params[1]) is not None:
+                # 第 2 个 token 就是难度 ⇒ 后面多出来的是误输，不是含空格的歌名
+                return SongSplit("", (), _too_many_params(entry_key))
+            if judge_detail.resolve_difficulty(cmd_params[-1]) is not None:
+                return SongSplit(
+                    " ".join(cmd_params[:-1]), (cmd_params[-1],), None)
+        # 锚点找不到（或 count < 2，由 _execute 的 min_params 先拦）——
+        # 按旧行为切，让下游报「难度不认识」
+        return SongSplit(
+            cmd_params[0], tuple(cmd_params[1:2]) or ("",), None)
+
+    if entry_key == "estimate":
+        if count >= 2 and judge_detail.resolve_difficulty(cmd_params[1]) is not None:
+            rest = list(cmd_params[1:])
+            if len(rest) > _ESTIMATE_MAX_REST:
+                return SongSplit("", (), _too_many_params(entry_key))
+            return SongSplit(cmd_params[0], tuple(rest), None)
+
+        anchor = next(
+            (i for i in range(1, count) if _is_named_difficulty(cmd_params[i])),
+            None,
+        )
+        if anchor is None:
+            # 找不到锚点 —— 按旧行为切，交给 _estimate_args 报「难度不认识」
+            return SongSplit(cmd_params[0], tuple(cmd_params[1:]), None)
+
+        rest = list(cmd_params[anchor:])
+        if len(rest) > _ESTIMATE_MAX_REST:
+            return SongSplit("", (), _too_many_params(entry_key))
+        return SongSplit(" ".join(cmd_params[:anchor]), tuple(rest), None)
+
+    raise ValueError(f"{entry_key!r} 不走乐曲混合检索")
+
+
+def _too_many_params(entry_key: str) -> str:
+    """``router.too_many_params`` 的渲染结果（带该指令的**完整**用法）。"""
+    return replies.text(
+        "router.too_many_params", usage=replies.text(f"commands.{entry_key}")
+    )
+
+
+def _search_songs(query: str):
+    """乐曲混合检索 —— 返回 ``(hits, error)``，两者必有一个是「空」。
+
+    曲库载入失败（文件缺失 / 结构损坏）**在这里兜住**：原先这个 ``try`` 在
+    :func:`liz_bot.judge_detail.judge_detail_reply` 与
+    :func:`liz_bot.score_estimate.estimate_reply` 内部，检索上移到本模块之后
+    必须跟着上移 —— 否则 ``FileNotFoundError`` 会一路冒到 ``qqgroupbot``，
+    用户看到的是一句「出错了」，而不是「曲库读不动」。
+    """
+    try:
+        return song_query.select_song(query, song_query.BY_ANY), None
+    except (OSError, ValueError):
+        # 与那两个模块同样的判据：文件缺失/读不动是 OSError，
+        # 结构损坏是 ValueError（JSONDecodeError 是其子类）。
+        # 其余异常照旧上抛 —— 那是程序缺陷，不该伪装成「DataError」。
+        _log.exception("混合检索：曲库载入失败 query=%r", query)
+        return None, replies.text("song.data_error")
+
+
+def _resolve_song(entry_key: str, cmd_params: list):
+    """切分 + 检索一步到位，返回 ``(hits, rest)``；切不出来 / 读不动时返回 ``(None, 文案)``。
+
+    只给**出图**用（见 :func:`_render_rich`）：那边只关心「有没有唯一的一首」，
+    而处理函数要区分「没找到 / 找到一首 / 找到多首」，所以自己调
+    :func:`_split_song_query` 与 :func:`_search_songs`。
+    """
+    split = _split_song_query(entry_key, cmd_params)
+    if split.error is not None:
+        return None, split.error
+    hits, error = _search_songs(split.query)
+    if error is not None:
+        return None, error
+    return hits, split.rest
+
+
+def _render_hit(
+    entry_key: str, hit: dict, rest: tuple[str, ...] = (),
+    session_key: str | None = None,
+) -> str:
     """把一条命中渲染成回复 —— **渲染方式由指令决定**。
 
     ==================  ==============================================
     指令 key            渲染成什么
     ==================  ==============================================
     ``alias_query``    别名列表（``/查询别名``）
+    ``songdata``       判定细节 —— 用 ``rest[0]`` 当难度
+    ``estimate``       估分结果 —— ``rest`` 交给 :func:`_estimate_args`
     其余查歌指令        单曲卡片（``/bm`` / ``/name`` / ``/song``）
     ==================  ==============================================
 
     消歧选中之后也要走这里，所以「同一份命中在不同指令下渲染不同」
     必须收在一个函数里，不能散在两处。
+
+    :param rest: **混合检索**的指令（``/songdata`` / ``/估分``）在选中候选后
+        要带上「难度及其后的参数」才能出结果 —— 见 :func:`_split_song_query`。
+        其余指令没有这个概念，默认空元组。
+    :param session_key: 只有 ``/估分`` 用得上 —— 成功的解要按会话存进一轮缓存
+        （见 :data:`liz_bot.score_estimate.CACHE`）。
     """
     if entry_key == "alias_query":
         return song_query.alias_text(hit)
+
+    if entry_key == "songdata":
+        return judge_detail.judge_detail_reply(
+            str(song_query.song_id(hit)), rest[0] if rest else "")
+
+    if entry_key == "estimate":
+        # ⚠️ 走 _estimate_args **解释** rest，不能按位置硬填 ——
+        # 百分比 / 星级 / combo 三个位置都能省，还有 ``x小`` 与 ``dx理论``
+        # 两种换位写法（见 _estimate_args 的说明）。
+        song_id, difficulty, percent, stars, combo, break_p = _estimate_args(
+            [str(song_query.song_id(hit))] + list(rest))
+        return score_estimate.estimate_reply(
+            song_id, difficulty, percent, stars, combo, break_p,
+            session_key=session_key)
+
     return song_query.format_song(hit["song"])
 
 
 def _choose_prompt(
-    session_key: str | None, entry_key: str, keyword: str, hits: list[dict]
+    session_key: str | None, entry_key: str, keyword: str, hits: list[dict],
+    rest: tuple[str, ...] = (),
 ) -> str:
     """命中多个候选 —— 记下选择状态并追问「选哪一个」。
 
@@ -357,13 +553,23 @@ def _choose_prompt(
 
     候选 id 转不出 int 时同样退回首条：否则序号会与实际候选错位，
     用户按序号选到的将是另一首。
+
+    :param rest: **混合检索**的指令在选中后重建指令所需的「其余参数」
+        （``/songdata`` 是难度、``/估分`` 是难度及其后）。状态里的 ``params``
+        存的就是它 —— 见 :func:`_resume_choice`。
     """
     ids = [song_query.song_id(h) for h in hits]
     if not session_key or any(i < 0 for i in ids):
-        return _render_hit(entry_key, hits[0])
+        return _render_hit(entry_key, hits[0], rest, session_key)
 
-    # params 里存触发本次选择的关键词，只作调试线索（见 pending.Pending.params）
-    _PENDING.put(session_key, entry_key, [keyword], choices=ids)
+    if rest:
+        # /songdata / /估分：存「难度及其后」，选中后拼成 [id] + rest 重跑
+        state_params = list(rest)
+    else:
+        # 查歌指令：没有其余参数，存关键词只作调试线索（历史行为，测试有断言）
+        state_params = [keyword]
+
+    _PENDING.put(session_key, entry_key, state_params, choices=ids)
     return song_query.choose_text(hits)
 
 
@@ -408,11 +614,32 @@ def _h_id(cmd_params, miss, session_key):
 
 
 def _h_songdata(cmd_params, miss, session_key):
-    return judge_detail.judge_detail_reply(cmd_params[0], cmd_params[1])
+    """``/songdata <歌曲id或歌名> <难度>`` —— 该谱面各判定的扣分。
+
+    第一个参数走**乐曲混合检索**（歌名 / 别名 / 纯数字 id），见
+    :func:`_split_song_query`。命中多首（SD / DX 同名）时列候选让用户选。
+    """
+    split = _split_song_query("songdata", cmd_params)
+    if split.error is not None:
+        return split.error
+
+    hits, error = _search_songs(split.query)
+    if error is not None:
+        return error
+    if not hits:
+        return miss
+    if len(hits) == 1:
+        return _render_hit("songdata", hits[0], split.rest, session_key)
+    return _choose_prompt(session_key, "songdata", split.query, hits, split.rest)
 
 
 def _estimate_args(cmd_params) -> tuple[str, str, str, str, str, str]:
     """``/估分`` 的参数整理 → ``(歌曲id, 难度, 百分比, 星级, combo, x小)``。
+
+    ⚠️ **只吃「已经解析出曲目 id」的参数** —— 歌名 / 别名的混合检索在
+    :func:`_h_estimate` 里做完了（见 :func:`_split_song_query`），到这里
+    ``cmd_params[0]`` 一定是数字 id。所以本函数与出图
+    （:func:`_render_rich`）能共用同一份整理逻辑。
 
     三个位置都能省，而且**百分比也能省**（AP / AP+ 根本用不上它）::
 
@@ -425,6 +652,7 @@ def _estimate_args(cmd_params) -> tuple[str, str, str, str, str, str]:
         /估分 147 紫 3小            # x小：break 的 3 颗小P（星级不限）
         /估分 147 紫 3小 4          # x小 定达成率，4★ 定 DX 分
         /估分 147 紫 100.0 3小 4    # 同上，百分比只是重复（会被忽略）
+        /估分 真夜中のドア 紫 100.0  # 第一个参数也可以是歌名 / 别名
 
     ``x小`` / ``x小P`` **与位置无关**：它取代百分比，出现在哪一格都认得
     （见 :func:`liz_bot.score_estimate.parse_break_p`）。它把达成率与 combo
@@ -505,15 +733,28 @@ def _estimate_args(cmd_params) -> tuple[str, str, str, str, str, str]:
 
 
 def _h_estimate(cmd_params, miss, session_key):
-    """``/估分 <歌曲id> <难度> <百分比> [星级] [combo]``。
+    """``/估分 <歌曲id或歌名> <难度> <百分比> [星级] [combo]``。
 
-    参数整理见 :func:`_estimate_args`。``session_key`` 透传下去，估分结果会
-    按会话存进一轮缓存（见 :data:`liz_bot.score_estimate.CACHE`）。
+    参数整理见 :func:`_estimate_args`。第一个参数走**乐曲混合检索**
+    （歌名 / 别名 / 纯数字 id），见 :func:`_split_song_query`。
+    ``session_key`` 透传下去，估分结果会按会话存进一轮缓存
+    （见 :data:`liz_bot.score_estimate.CACHE`）。
     """
-    song_id, difficulty, percent, stars, combo, break_p = _estimate_args(cmd_params)
-    return score_estimate.estimate_reply(
-        song_id, difficulty, percent, stars, combo, break_p, session_key=session_key,
-    )
+    split = _split_song_query("estimate", cmd_params)
+    if split.error is not None:
+        return split.error
+
+    hits, error = _search_songs(split.query)
+    if error is not None:
+        return error
+    if not hits:
+        return miss
+    if len(hits) == 1:
+        return _render_hit("estimate", hits[0], split.rest, session_key)
+
+    # 命中多首 —— 列候选。选中后由 _resume_choice 拼成 [id] + rest 重跑，
+    # 那时才会真的去解估分（解一次要跑有界背包 DP，别在这儿白跑）。
+    return _choose_prompt(session_key, "estimate", split.query, hits, split.rest)
 
 
 def _h_alias_query(cmd_params, miss, session_key):
@@ -894,24 +1135,38 @@ def _render_rich(entry: Command, cmd_params: list, fallback: str) -> "RichReply 
     ``help_rows()`` 是**唯一**会在这里抛异常的东西（文案与指令表对不上）。
     刻意**不**吞掉它 —— 那是开发期就该炸出来的配置错误，而且 ``reply_text``
     在 rich 之外的那条路上本来就会调到它，吞掉只会让问题更难发现。
+
+    ``/songdata`` / ``/估分`` 的第一个参数是**混合检索**（歌名 / 别名 / id），
+    所以要先用 :func:`_resolve_song` 把它解析成曲目 id。**解析不出唯一一首就
+    不出图**：检索不到没有图可画，命中多首则是在等用户选候选（那条消息是
+    候选列表，不是某首歌的结果），此时出图等于把第一首的图当成用户要的。
     """
-    if entry.key == "songdata":
-        png = judge_image.render_png(cmd_params[0], cmd_params[1])
-        # 文件名保持 ``judge_`` 前缀不变 —— 它只影响服务端侧的记录，
-        # 但改它没有任何收益，反而会让既有的排查习惯失效。
-        filename = f"judge_{cmd_params[0]}_{cmd_params[1]}.png"
-    elif entry.key == "estimate":
-        # 参数整理与 _h_estimate 共用 _estimate_args，
-        # 保证图里和文字里是同一份记录
-        song_id, difficulty, percent, stars, combo, break_p = _estimate_args(cmd_params)
-        png = estimate_image.render_png(
-            song_id, difficulty, percent, stars, combo, break_p)
-        filename = f"estimate_{cmd_params[0]}_{cmd_params[1]}.png"
+    if entry.key in MIXED_SONG_KEYS:
+        hits, rest = _resolve_song(entry.key, cmd_params)
+        if hits is None or len(hits) != 1:
+            return None
+        song_id = str(song_query.song_id(hits[0]))
+        if entry.key == "songdata":
+            difficulty = rest[0] if rest else ""
+            png = judge_image.render_png(song_id, difficulty)
+            # 文件名保持 ``judge_`` 前缀不变 —— 它只影响服务端侧的记录，
+            # 但改它没有任何收益，反而会让既有的排查习惯失效。
+            filename = f"judge_{song_id}_{difficulty}.png"
+        else:
+            # 与 _h_estimate / _render_hit 共用 _estimate_args，
+            # 保证图里和文字里是同一份记录
+            est_id, difficulty, percent, stars, combo, break_p = _estimate_args(
+                [song_id] + list(rest))
+            png = estimate_image.render_png(
+                est_id, difficulty, percent, stars, combo, break_p)
+            filename = f"estimate_{est_id}_{difficulty}.png"
     elif entry.key == "help":
         # 数据（help_rows）在这里取、渲染在 help_image 里做 —— 反过来让
         # help_image 去 import command_router 会形成循环导入。
-        # 缓存也在 help_image 内部，键就是这三份内容（见那里的说明）。
-        png = help_image.render_png(help_rows(), help_title(), help_note())
+        # 缓存也在 help_image 内部，键就是这两份内容（见那里的说明）。
+        # ⚠️ 尾注（``help_note()``）**不传进去** —— 用户要求图里不要那句
+        # 「舞萌相关指令…」，它只留在文字版（见 help_image._draw 的说明）。
+        png = help_image.render_png(help_rows(), help_title())
         # help 没有参数，文件名不带曲目 id（也不该带 —— 它不是「某首歌」的图）
         filename = "help.png"
     else:
@@ -1121,6 +1376,19 @@ async def _resume_choice(
     if not chosen:
         # 理论上不会发生（候选与本次查询来自同一份曲库快照）—— 真发生了就当作没找到
         return replies.text("song.not_found")
+
+    if entry.key in MIXED_SONG_KEYS:
+        # /songdata / /估分：把歌名换成选中的 id，**其余参数原样带上**重跑一遍。
+        # 复用 _execute 而不是直接渲染，是为了让「选候选」与「直接写 id」
+        # 两条路径的参数校验、失败文案、出图判定完全一致 —— 少一处就是漂移。
+        cmd_params = [str(state.choices[index])] + list(state.params or [])
+        text, ok = _execute(entry, cmd_params, session_key, rich)
+        if ok:
+            return text
+        # 与 _resume_pending 同一条安全阀：失败也留住状态，让用户重发一轮
+        _PENDING.put(session_key, entry.key, [])
+        return _retry_text(entry, text)
+
     return _render_hit(entry.key, chosen[0])
 
 

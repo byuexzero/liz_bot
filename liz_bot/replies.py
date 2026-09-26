@@ -212,10 +212,11 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "commands.random": (str, ()),
     "commands.id": (str, ()),
     "commands.songdata": (str, ()),
+    # 可选：``/help`` 列表里的**简短写法**。参数多的指令只**缩短参数名**、
+    # 不省略参数（免得整行在手机端折行）；完整签名仍在 ``commands.<key>`` 里
+    # （补参追问要按它派生参数名，报错也拿它当 usage）。
+    "commands.songdata_brief": (str, ()),
     "commands.estimate": (str, ()),
-    # 可选：``/help`` 列表里的**简短写法**。参数多的指令用 ``<多参数>`` 代替
-    # 那一长串位置参数，免得一行撑到折行；完整签名仍在 ``commands.estimate``
-    # 里（补参追问要按它派生参数名，报错也拿它当 usage）。
     "commands.estimate_brief": (str, ()),
     "commands.bm": (str, ()),
     "commands.name": (str, ()),

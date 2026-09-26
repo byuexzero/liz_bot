@@ -10,6 +10,10 @@
 图片版把它排成**两列**（用法 / 说明），别名另起一行挂在用法下面。
 折行问题不存在（宽度由我们自己定），用法与说明的归属一眼可见。
 
+⚠️ 文字版末尾那句「舞萌相关指令用 # 开头…」（``daily.help_maimai``）
+**不画进图里**（用户 2026-09-27 要求）。它仍留在文字版 —— 那是 ``/help`` 中
+唯一说明 ``#`` 前缀的地方，而文字版是发图失败时的降级路径。
+
 数据来源
 ========
 **全部来自** :func:`liz_bot.command_router.help_rows` —— 一行都不另解析。
@@ -37,8 +41,8 @@ PIL 未安装、字体找不到、编码失败 —— 任何一种都**返回 ``
 
 用法::
 
-    from liz_bot.command_router import help_rows, help_title, help_note
-    png = help_image.render_png(help_rows(), help_title(), help_note())   # bytes | None
+    from liz_bot.command_router import help_rows, help_title
+    png = help_image.render_png(help_rows(), help_title())   # bytes | None
 """
 
 from __future__ import annotations
@@ -109,7 +113,6 @@ _GAP = 30          # 区块之间的间距
 _ROW_H = 40        # 一行指令的高度（不含别名行）
 _ALIAS_H = 30      # 别名行的高度
 _COL_GAP = 44      # 「用法」列与「说明」列之间的间隙
-_HEAD_H = 30       # 表头行高度
 
 #: 正文区（不含内边距）的目标宽度上限。超过它就把**说明**折行 ——
 #: 手机 QQ 会把图缩到屏宽，太宽的图会让字变小到看不清。
@@ -131,22 +134,21 @@ _CACHE: dict[str, bytes] = {}
 _CACHE_MAX = 8
 
 
-def cache_key(rows, title: str, note: str) -> str:
-    """算出这三份内容的指纹 —— 任何一处文案变了它都会变。
+def cache_key(rows, title: str) -> str:
+    """算出这两份内容的指纹 —— 任何一处文案变了它都会变。
 
     用 ``\\x1e`` / ``\\x1f`` 当分隔符（正文里不会出现），免得
     「A 的说明 + B 的用法」和「A 的用法 + B 的说明」拼出同一个串。
     """
     payload = "\x1f".join(
-        [title, note]
-        + [f"{r.usage}\x1e{r.desc}\x1e{','.join(r.aliases)}" for r in rows]
+        [title] + [f"{r.usage}\x1e{r.desc}\x1e{','.join(r.aliases)}" for r in rows]
     )
     return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
-def cached_png(rows, title: str, note: str) -> bytes | None:
+def cached_png(rows, title: str) -> bytes | None:
     """取缓存（不渲染）。给测试与排查用。"""
-    return _CACHE.get(cache_key(rows, title, note))
+    return _CACHE.get(cache_key(rows, title))
 
 
 def clear_cache() -> None:
@@ -156,17 +158,19 @@ def clear_cache() -> None:
 
 # --------------------------------------------------------------------------- 主入口
 
-def render_png(rows, title: str, note: str) -> bytes | None:
+def render_png(rows, title: str) -> bytes | None:
     """渲染成 PNG 字节；任何原因不能渲染时返回 ``None``（调用方退回文字版）。
 
     :param rows: :class:`liz_bot.command_router.HelpRow` 序列（只含 ``listed`` 的指令）
     :param title: 标题，即 ``daily.help``
-    :param note: 尾注，即 ``daily.help_maimai``
+
+    ⚠️ **没有尾注参数** —— ``daily.help_maimai`` 那句不画进图里（用户 2026-09-27
+    要求）。它仍在文字版里，见 :func:`_draw` 的说明。
     """
     if Image is None or ImageDraw is None:
         return None
 
-    key = cache_key(rows, title, note)
+    key = cache_key(rows, title)
     hit = _CACHE.get(key)
     if hit is not None:
         return hit
@@ -178,7 +182,7 @@ def render_png(rows, title: str, note: str) -> bytes | None:
     # 编码也在 try 里 —— 本函数的契约是「**任何原因**不能渲染时返回 None」，
     # 而 image.save() 同样可能失败（PIL 内部错误、内存不足等）。
     try:
-        image = _draw(rows, title, note, fonts)
+        image = _draw(rows, title, fonts)
         buf = io.BytesIO()
         image.save(buf, format="PNG", optimize=True)
     except Exception:  # noqa: BLE001 - 渲染失败一律降级
@@ -236,8 +240,23 @@ def _wrap(text: str, font, max_w: float, measure) -> list[str]:
 
 # --------------------------------------------------------------------------- 绘制
 
-def _draw(rows, title: str, note: str, fonts) -> "Image.Image":
-    """真正画图。数据全部取自入参，见 :func:`render_png` 的调用处。"""
+def _text_h(probe, text: str, font) -> float:
+    """一行文字的**实际像素高**（从字顶到字底）。
+
+    ⚠️ **别拿字号当高度**：PIL 的 ``d.text`` 是**左上角锚点**，而字号 24 的字
+    实际占约 32px（含上下伸展）。按「字号」或随手写个行高推进，后面的分隔线
+    就会**横穿**文字 —— 2026-09-27 就这么错过一次（用户报「用法下面的横线错位了」）。
+    """
+    return probe.textbbox((0, 0), str(text), font=font)[3]
+
+
+def _draw(rows, title: str, fonts) -> "Image.Image":
+    """真正画图。数据全部取自入参，见 :func:`render_png` 的调用处。
+
+    ⚠️ **尾注（``daily.help_maimai``）刻意不画**（用户 2026-09-27 要求
+    「删除舞萌相关指令这一行」）。它仍留在**文字版**里 —— 那是 ``/help`` 中
+    唯一说明 ``#`` 前缀的地方，而文字版是发图失败时的降级路径。
+    """
     title_f, usage_f, desc_f, alias_f = fonts
 
     # 标题来自 ``daily.help``（「Liz 会这些指令：」）—— 末尾那个冒号是给**文字版**
@@ -252,6 +271,9 @@ def _draw(rows, title: str, note: str, fonts) -> "Image.Image":
     def measure(text: str, font) -> float:
         return probe.textlength(str(text), font=font)
 
+    # 表头那一带的高度由**实测**文字高决定，见 _text_h 的说明
+    head_h = _text_h(probe, head_usage, usage_f)
+
     # ---- 先定列宽，再折行（说明列能占多宽取决于用法列有多宽）----
     usage_w = max(
         [measure(head_usage, usage_f)] + [measure(r.usage, usage_f) for r in rows]
@@ -263,18 +285,15 @@ def _draw(rows, title: str, note: str, fonts) -> "Image.Image":
         (r.usage, _wrap(r.desc, desc_f, desc_avail, measure), r.alias_line)
         for r in rows
     ]
-    note_lines = _wrap(note, desc_f, _MAX_CONTENT_W, measure)
 
     desc_w = max(
         [measure(head_desc, desc_f)]
         + [measure(line, desc_f) for _, lines, _ in body for line in lines]
     )
-    note_w = max((measure(line, desc_f) for line in note_lines), default=0)
 
     content_w = max(
         usage_w + desc_w,
         measure(heading, title_f),
-        note_w,
     )
     width = int(_PAD * 2 + content_w)
 
@@ -285,8 +304,7 @@ def _draw(rows, title: str, note: str, fonts) -> "Image.Image":
         for _, lines, alias in body
     )
     height = int(
-        _PAD * 2 + 46 + _GAP + _HEAD_H + 10
-        + body_h + _GAP + _ROW_H * (len(note_lines) + 1) + 40
+        _PAD * 2 + 46 + _GAP + head_h + 20 + body_h + 40
     )
 
     img = Image.new("RGB", (width, height), ji.BG)
@@ -300,8 +318,11 @@ def _draw(rows, title: str, note: str, fonts) -> "Image.Image":
     # ---- 表头 + 分隔线 ----
     d.text((x0, y), head_usage, font=usage_f, fill=ji.HEAD)
     d.text((x0 + usage_w, y), head_desc, font=usage_f, fill=ji.HEAD)
-    y += _HEAD_H - 8
-    d.line((x0, y, x0 + content_w, y), fill=ji.GRID, width=2)
+    # ⚠️ 分隔线必须落在**表头文字下方**：先按实测文字高推进，再多留 10px 余量
+    # （见 _text_h）。整条线的宽度取**表格**的宽度（用法列 + 说明列），
+    # 不取 content_w —— 后者可能被更宽的标题撑开，线就会拖出表格之外。
+    y += head_h + 10
+    d.line((x0, y, x0 + usage_w + desc_w, y), fill=ji.GRID, width=2)
     y += 10
 
     # ---- 每条指令：用法（粗体）+ 说明（折行）+ 别名（更小、更浅）----
@@ -317,16 +338,5 @@ def _draw(rows, title: str, note: str, fonts) -> "Image.Image":
             # 属于用法那一列的信息。
             d.text((x0, y), alias, font=alias_f, fill=ji.MUTED)
             y += _ALIAS_H
-    y += _GAP - 14
-
-    # ---- 尾注：单独一张浅色卡片，与指令列表分开 ----
-    card_h = _ROW_H * len(note_lines) + 16
-    d.rounded_rectangle(
-        (x0 - 14, y - 10, x0 + max(note_w, 200) + 14, y - 10 + card_h),
-        radius=16, fill=ji.CARD, outline=ji.BORDER, width=2,
-    )
-    for line in note_lines:
-        d.text((x0, y), line, font=desc_f, fill=ji.MUTED)
-        y += _ROW_H
 
     return ji._crop(img, y)
