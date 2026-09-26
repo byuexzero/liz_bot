@@ -81,9 +81,10 @@ def render_png(
     :param song_id: 曲目 ID（纯数字字符串）
     :param difficulty: 难度 —— ``0``-``4`` / ``basic``-``remas`` / ``绿黄红紫白``
     :param percent: 目标达成率，如 ``99.5989``（可带 ``%``）
-    :param stars: 目标 DX 星级 —— ``3`` / ``3星`` / ``★★★``；空串 = 0★
+    :param stars: 目标 DX 星级 —— ``3`` / ``3星`` / ``★★★`` / ``dx理论``；
+        空串 = **不限**（按自然落点取该档的推荐段）
     :param combo: combo 等级 —— ``FC`` / ``FC+`` / ``AP`` / ``AP+``；空串 = 不限
-    :param break_p: ``x小`` / ``x小P`` 写法（AP 下 break 的小 P 数）
+    :param break_p: ``x小`` / ``x小P`` 写法（break 的小 P 数）
     """
     if Image is None or ImageDraw is None:
         return None
@@ -122,7 +123,10 @@ def _draw(est: se.Estimate, fonts) -> "Image.Image":
 
     pad, gap, row_h, col_gap = 36, 28, 46, 34
 
-    # ---- 文案：**与文字版共用同一批键**，所以两版不可能各说各话 ----
+    # ---- 文案：**与文字版共用同一批键与同一个 helper**，所以两版不可能各说各话 ----
+    # ⚠️ 「要求的星级」「要求的 combo」必须走 ``stars_summary`` / ``combo_summary``
+    # —— 星级不限时文字版写「不限」，这里若直接拿 ``est.want_stars`` 就会写成
+    # 「5★（要求 5★）」，同一份结果两个说法。``star_note`` 同理。
     title = est.title
     sub = replies.text(
         "estimate.sub",
@@ -133,13 +137,14 @@ def _draw(est: se.Estimate, fonts) -> "Image.Image":
     result = replies.text(
         "estimate.result", target=se._pct(est.target), actual=se._pct(sol.achievement),
     )
+    star_want, star_note = se.stars_summary(est)
+    combo_want, combo_actual = se.combo_summary(est)
     stars = replies.text(
-        "estimate.stars", stars=sol.stars, want=est.want_stars,
+        "estimate.stars", stars=sol.stars, want=star_want,
         dx=sol.deluxscore, max_dx=est.max_deluxscore,
     )
     combo_req = replies.text(
-        "estimate.combo_req",
-        combo=se.COMBO_NAMES.get(est.combo, ""), label=se.combo_label(est.combo_flag),
+        "estimate.combo_req", combo=combo_want, label=combo_actual,
     )
     ignored = se.ignored_note(est)
     scale = replies.text(
@@ -147,6 +152,11 @@ def _draw(est: se.Estimate, fonts) -> "Image.Image":
     gap_line = (
         replies.text("estimate.gap_zero") if not sol.gap
         else replies.text("estimate.gap_note", gap=se._pct(sol.gap))
+    )
+    # gap 超容差要显式告警（与文字版同一条件、同一文案）
+    gap_warn = (
+        replies.text("estimate.gap_warn", gap=se._pct(sol.gap))
+        if sol.gap > se.TOLERANCE else None
     )
     upload_title = replies.text("estimate.upload_title")
     unit = replies.text("estimate.unit")
@@ -206,11 +216,15 @@ def _draw(est: se.Estimate, fonts) -> "Image.Image":
         measure(stars, sub_f), measure(combo_req, sub_f), measure(scale, sub_f),
         measure(gap_line, sub_f), measure(upload_title, head_f), measure(unit, sub_f),
         measure(ignored, sub_f) if ignored else 0,
+        measure(star_note, sub_f) if star_note else 0,
+        measure(gap_warn, sub_f) if gap_warn else 0,
     )
     width = int(pad * 2 + content_w)
     # 画在**超高**画布上、最后按内容裁剪（见 judge_image._crop）——
     # 手工推算高度太容易和绘制代码不同步。
-    height = int(pad * 2 + 46 + 32 + gap + 40 + 32 * 3 + gap + row_h * (len(rows) + 2)
+    # 元信息行最多 5 行（scale / stars / combo_req / ignored / star_note），
+    # 尾巴最多 3 行（star_note 已在上面，这里还有 gap_line / gap_warn / unit）。
+    height = int(pad * 2 + 46 + 32 + gap + 40 + 32 * 5 + gap + row_h * (len(rows) + 2)
                  + gap + 40 + row_h * (len(upload) + 1) + gap + 32 * 4)
 
     img = Image.new("RGB", (width, height), BG)
@@ -236,6 +250,11 @@ def _draw(est: se.Estimate, fonts) -> "Image.Image":
     y += 32
     d.text((x0, y), stars, font=sub_f, fill=MUTED)
     y += 32
+    # 星级说明行（推荐段没取到、退回完整区间时才有）—— 紧跟星级那行，
+    # 与文字版的顺序一致
+    if star_note:
+        d.text((x0, y), star_note, font=sub_f, fill=MUTED)
+        y += 32
     d.text((x0, y), combo_req, font=sub_f, fill=MUTED)
     y += 32
     if ignored:
@@ -283,7 +302,9 @@ def _draw(est: se.Estimate, fonts) -> "Image.Image":
         y += row_h
     y += gap - 10
 
-    for line in (gap_line, unit):
+    for line in (gap_line, gap_warn, unit):
+        if not line:
+            continue
         d.text((x0, y), line, font=sub_f, fill=MUTED)
         y += 32
 

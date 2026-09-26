@@ -47,8 +47,9 @@
 1. **Perfect 与 Critical Perfect 在达成率上同分**（同类音符得分完全相同），
    于是**普通音符的扣分只由 Great / Good / Miss 决定**，cp/p 的扣分恒为 0。
    所以主表**只列 great / good / miss 三行**，不列 cp/p（一行 0.0000 没有信息量，
-   用户 2026-09-25 决定删掉）；「cp/p 不扣分」这件事写在表下的 ``judge.unit`` 里。
-   两者差异只体现在 DX 分数（3 vs 2）与 BreakBonus 上。
+   用户 2026-09-25 决定删掉）；表下那句解释也在 2026-09-26 一并删了
+   （用户要求 —— 表里本来就没有，再解释一句纯属噪音）。两者差异只体现在
+   DX 分数（3 vs 2）与 BreakBonus 上。
 2. 普通音符的扣分与**音符权重**成正比：``tap = touch = 1``、``hold = 2``、
    ``slide = 3``、``break = 5``（倍率相对 tap）。
    所以 hold 的扣分恰好是 tap 的 2 倍、slide 是 3 倍 —— 表里能直接看出来。
@@ -137,7 +138,7 @@ BREAK_BONUS_MAX = 100
 #:
 #: ⚠️ **刻意不含 cp/p** —— 普通音符的 Critical Perfect 与 Perfect 得分完全相同，
 #: 扣分**恒为 0**，留着就是一行没信息量的 ``0.0000``（用户 2026-09-25 决定删掉）。
-#: 「cp/p 不扣分」写进 ``judge.unit`` 文案，不占表行。
+#: 表下也**不再解释**这件事（用户 2026-09-26 要求），所以 ``judge.unit`` 里没有它。
 #:
 #: 得分率 0.8 / 0.5 / 0.0 来自 ``judgeScoreTbl``，对 tap/hold/slide/touch 通用。
 NORMAL_RATE = (("great", 0.8), ("good", 0.5), ("miss", 0.0))

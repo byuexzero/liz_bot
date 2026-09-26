@@ -130,11 +130,20 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # 副标题（曲名单独画，所以与 judge.header 分开一份）
     "estimate.sub": (str, ("difficulty", "level", "charter")),
     "estimate.stars": (str, ("stars", "want", "dx", "max_dx")),
+    # {want} 的三种形态（见 score_estimate.stars_summary）：写死的星级 / 不限 /
+    # dx理论。分成三个键是为了让「不限」与「dx理论」不必硬拼出「不限★」这种怪句子。
+    "estimate.want_star": (str, ("star",)),
+    "estimate.want_any": (str, ()),
+    "estimate.want_dx_full": (str, ()),
+    # 推荐段取不到时补一句 —— 那种情况下 DX 会贴到该星级的边上（见 dx_pick_band），
+    # 不说明白用户会以为算错了。{lo}-{hi} 是该星级完整区间，{plo}-{phi} 是推荐段。
+    "estimate.dx_out": (str, ("stars", "lo", "hi", "plo", "phi")),
     # combo 等级是「恰好」约束：{combo} 是要求（FC / FC+ / AP / AP+ / 无），
     # {label} 是这份判定分布实际会显示的连击状态（两者必然一致）。
     "estimate.combo_req": (str, ("combo", "label")),
-    # AP / AP+ 会忽略百分比与星级（见 score_estimate.COMBO_LOCKED），
-    # 结果行里的「目标」是算法自己取的上限，必须说明白，否则用户以为是他要的数
+    # AP / AP+ 会忽略**百分比**（见 score_estimate.COMBO_LOCKED），
+    # 结果行里的「目标」是算法自己取的该等级上限，必须说明白，否则用户以为是他要的数。
+    # ⚠️ 只忽略百分比 —— **星级照常生效**（DX 分由「多少普通音符是小 P」决定）。
     "estimate.ignored": (str, ("combo",)),
     "estimate.scale": (str, ("normal", "bonus")),
     # 判定明细表的列头（CP/P/Gr/Gd/Ms 是 ASCII，不进文案）
@@ -160,7 +169,11 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # x小 / x小P 写法（AP 下 break 的小 P 数）
     "estimate.bad_break_p": (str, ("value",)),
     "estimate.combo_conflict": (str, ("combo",)),
+    # x小 已经钉死了 DX 分（= 满分 - x），再要求 dx理论 就自相矛盾
+    "estimate.dx_conflict": (str, ()),
     "estimate.break_p_note": (str, ("count",)),
+    # dx理论 把 DX 钉成满分 ⇒ 全 CP ⇒ 达成率必然 101%，百分比同样失去意义
+    "estimate.dx_full_note": (str, ()),
     "estimate.need_percent": (str, ()),
     "estimate.too_high": (str, ()),
     "estimate.no_solution": (str, ()),

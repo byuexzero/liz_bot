@@ -421,15 +421,18 @@ def _estimate_args(cmd_params) -> tuple[str, str, str, str, str, str]:
         /估分 147 紫 100.0 FC       # 不要星级（FC 不可能是星级，无歧义）
         /估分 147 紫 AP             # 不要百分比（AP 不可能是百分比，无歧义）
         /估分 147 紫 AP 3           # 不要百分比，要 3★
-        /估分 147 紫 AP 3小         # x小：break 的 3 颗小P（星级随之确定）
-        /估分 147 紫 3小            # 同上，x小 也不可能是百分比
+        /估分 147 紫 dx理论          # 要 DX 满分（星级槽的另一种写法）
+        /估分 147 紫 3小            # x小：break 的 3 颗小P（星级不限）
+        /估分 147 紫 3小 4          # x小 定达成率，4★ 定 DX 分
+        /估分 147 紫 100.0 3小 4    # 同上，百分比只是重复（会被忽略）
 
-    ``x小`` / ``x小P`` **与位置无关**：它同时取代百分比与星级，出现在哪一格
-    都认得（见 :func:`liz_bot.score_estimate.parse_break_p`）。
+    ``x小`` / ``x小P`` **与位置无关**：它取代百分比，出现在哪一格都认得
+    （见 :func:`liz_bot.score_estimate.parse_break_p`）。它把达成率与 combo
+    钉死之后，剩下的格子按「两格 ⇒ ``百分比 星级``，一格 ⇒ 星级」读。
 
     其余参数走「**位置优先，只在无歧义时才顺移**」：某个位置放不下时才往后挪，
-    绝不往回填。所以 ``/估分 147 紫 2 AP`` 里的 ``2`` 一定是星级（``2`` 既是
-    合法百分比也是合法 combo 等级，按位置走，**不猜**）。
+    绝不往回填。所以 ``/估分 147 紫 2 AP`` 里的 ``2`` 是**百分比** ——
+    ``2`` 既是合法百分比也是合法星级，按位置走，**不猜**。
 
     整理不出来的值照样往下传，由 :func:`liz_bot.score_estimate.estimate`
     报出**具体**的错（``bad_percent`` / ``bad_stars`` / ``bad_combo``）。
@@ -443,11 +446,38 @@ def _estimate_args(cmd_params) -> tuple[str, str, str, str, str, str]:
     def is_combo(tok: str) -> bool:
         return score_estimate.parse_combo(tok) not in (None, score_estimate.COMBO_ANY)
 
+    def is_star(tok: str) -> bool:
+        """星级槽认得两种写法：星级本身，以及 ``dx理论``（DX 满分）。"""
+        return (score_estimate.parse_dx_full(tok)
+                or score_estimate.parse_stars(tok) is not None)
+
     # x小 / x小P 先摘出来：它出现在哪一格都算
     for i, tok in enumerate(rest):
         if score_estimate.parse_break_p(tok) is not None:
             break_p = rest.pop(i)
             break
+
+    if break_p:
+        # ``x小`` 已经把达成率与 combo 钉死，剩下的格子按「位置优先」读：
+        #   * 两格 ⇒ ``百分比 星级``；
+        #   * 一格 ⇒ 依次试 **combo → 星级 → 百分比**。``x小`` 之后百分比没有
+        #     意义（只是重复一遍，``estimate()`` 会忽略并出一行说明），所以
+        #     星级要排在它前面 —— ``/估分 147 紫 3小 4`` 的 ``4`` 是 4★，不是 4%。
+        #     combo 排最前是为了让 ``estimate()`` 报出 combo_conflict 而不是
+        #     把 ``FC`` 当成看不懂的星级。
+        if len(rest) >= 2:
+            percent = rest.pop(0)
+        if rest:
+            tok = rest.pop(0)
+            if is_combo(tok) and not is_star(tok):
+                combo = tok                       # 交给 estimate() 报 combo_conflict
+            elif is_star(tok):
+                stars = tok
+            elif score_estimate.parse_percent(tok) is not None:
+                percent = tok                     # 只是重复，estimate() 会忽略
+            else:
+                stars = tok                       # 交给 estimate() 报 bad_stars
+        return cmd_params[0], cmd_params[1], percent, stars, combo, break_p
 
     if rest:
         tok = rest.pop(0)
@@ -455,18 +485,20 @@ def _estimate_args(cmd_params) -> tuple[str, str, str, str, str, str]:
             percent = tok
         elif is_combo(tok):
             combo = tok
+        elif is_star(tok):
+            stars = tok                           # 星级提前给，百分比留空
         else:
-            percent = tok                     # 交给 estimate() 报 bad_percent
+            percent = tok                         # 交给 estimate() 报 bad_percent
     if rest:
         tok = rest.pop(0)
-        if score_estimate.parse_stars(tok) is not None:
+        if is_star(tok):
             stars = tok
         elif not combo and is_combo(tok):
             combo = tok
         else:
-            stars = tok                       # 交给 estimate() 报 bad_stars
+            stars = tok                           # 交给 estimate() 报 bad_stars
     if rest:
-        combo = rest.pop(0)                   # 只剩 combo 这一格
+        combo = rest.pop(0)                       # 只剩 combo 这一格
 
     return cmd_params[0], cmd_params[1], percent, stars, combo, break_p
 
@@ -553,10 +585,17 @@ def help_reply() -> str:
     + ``daily.help_maimai`` 尾注），这里只负责拼接与**一致性断言**。
 
     **参数多的指令可以用简短写法**：若 ``commands.<key>_brief`` 存在就用它
-    （典型是把一长串位置参数收成 ``<多参数>``，免得整行在手机端折行）。
+    （只**缩短参数名**、不省略参数，免得整行在手机端折行）。
     ``commands.<key>`` 始终保留**完整签名** —— 补参追问要按它派生参数名
     （:func:`_param_names`），参数个数出错时也拿它当 usage。所以简短写法只影响
     ``/help`` 这一处，报错提示依旧是全的。
+
+    ⚠️ 2026-09-26 用户要求：``/估分`` 的参数列表**必须列出 dx星级 与 combo**
+    （此前收成 ``<多参数>``，用户看不出还能给什么）—— 简短写法只许缩短名字，
+    不许把可选参数藏起来。
+
+    ``/help`` 在 ``rich=True`` 时走图片版（见 :func:`_render_rich` 的 ``help``
+    分支），这里返回的文字版始终是**兜底**。
 
     :raises RuntimeError: 某条指令的 help 文案与它的规范名对不上
         （典型场景：改了 ``COMMANDS`` 里的名字，忘了改 ``replies.json``）
@@ -619,6 +658,7 @@ _FAILURE_KEYS = (
     "estimate.bad_combo",          # combo 等级看不懂
     "estimate.bad_break_p",        # x小 写法看不懂 / 超出 break 数
     "estimate.combo_conflict",     # x小 与别的 combo 等级冲突
+    "estimate.dx_conflict",        # dx理论 与 x小 互斥（都钉死 DX 分）
     "estimate.need_percent",       # 没给百分比（只有 AP / AP+ 可以不给）
     "estimate.too_high",           # 目标超过 101%
     "estimate.no_solution",        # 没找到可行分布
