@@ -158,6 +158,14 @@ liz_bot/emoji_gif
 # 本地彩排产生的数据卷（local_rehearsal.py 的默认卷目录）
 .local_volume
 
+# 更新公告的**成图**（更新公告_verX.Y.png，约 0.5MB）——
+# 它是 `_tools/make_notice_image.py` 渲染出来、**手工发给群友**的发布产物。
+# 源文件 .md 已被上面 `**/*.md` 挡住；成图这条单独列，因为
+# `**/*.md` 只按扩展名匹配，盖不住 .png。
+# 容器里没有任何代码读它（`liz_bot/` 对公告零引用），进镜像纯属白送体积。
+# ⚠️ 通配必须带 `**/`（裸名是精确匹配，见上文坑 A）。
+**/更新公告_*.png
+
 # deploy/ 是给「自己管操作系统的 VPS」用的：systemd 单元 + docker-compose.yml。
 # 容器里没有 systemd、也不会在里面跑 compose，放进去只会让人困惑。
 #
