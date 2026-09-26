@@ -85,8 +85,15 @@ AP+ 拉回 AP。所以 :data:`COMBO_NEED` 给 AP 钉的是 **break 的 Perfect**
   以 147 为例（break 14 颗）落在 **100.75% ~ 100.98%**，取不到 100.0%。
 * ``AP+`` 只允许「普通音符 CP/P + break 全 CP」⇒ 达成率恒为 **101%**。
 
-这不是求解失败，而是数学上就取不到。所以百分比照旧**不当约束用**
-（见 :data:`COMBO_LOCKED`），但 **DX 星级照常生效** —— 两者的旋钮是分开的：
+这不是求解失败，而是数学上就取不到。所以：
+
+* ``AP+`` 的百分比**当约束没有意义**（只有 101% 一个值）⇒ 忽略它，
+  直接给这一档（见 :data:`COMBO_PERCENT_IGNORED`）；
+* ``AP`` 的百分比**是有意义的**（2026-09-27 起）：在那串离散值里挑用户要的
+  那一档，挑不到就报「不可达」（见 :data:`AP_MIN_PERCENT`）——
+  以前是默默忽略，用户填了 100.0 却拿到 100.98 会以为算错。
+
+两者都 **DX 星级照常生效** —— 达成率与 DX 分是**两个独立的旋钮**：
 达成率由「break 降了几颗」决定，DX 分由「有多少普通音符是小 P」决定。
 
 DX 星级
@@ -301,10 +308,10 @@ STRICT_BUDGET = 0.8
 # 「普通音符 CP/P + break 全 CP」—— 普通音符的小 P 是允许的。
 # 这一点决定了 AP+ 的 DX 分**可以不满分**。详见模块文档。
 #
-# 只有 ``combo == COMBO_ANY`` 是「不限」—— 那时算法自由发挥（结果可能是任意一档）。
+# ⚠️ **连击等级只有 0-4**（``PlayComboFlagID``）—— **没有 -1**。
+# 「不限」不是一档等级，用 ``None`` 表示（用户 2026-09-27 明确要求）。
+# 所以凡是「等级」的地方一律是 ``int | None``，``None`` = 不加约束。
 
-#: 未指定 combo 等级。
-COMBO_ANY = -1
 #: 合法等级。
 COMBO_LEVELS = (0, 1, 2, 3, 4)
 #: 等级 → **允许**的判定档位，按音符类型分（``"*"`` = 所有类型）。
@@ -324,6 +331,10 @@ COMBO_ALLOWED: dict[int, dict[str, tuple[str, ...]]] = {
 #:
 #: ⚠️ AP（3）钉的是 **break 的 Perfect**，不是任意一颗 Perfect ——
 #: 普通音符的小 P 不改变达成率，也就无法把 AP+ 拉回 AP（见模块文档）。
+#:
+#: ⚠️ 这条要求也顺手覆盖了「**没有 break 的谱面**」：那种谱面上全 CP 就是 AP+，
+#: AP 根本判不出来，而这里找不到 break 降级项 ⇒ :func:`solve` 直接报
+#: ``combo_unreachable``。**不需要**另写一条「break 数为 0」的特判。
 COMBO_NEED: dict[int, tuple[str, str] | None] = {
     0: ("*", "Miss"),
     1: ("*", "Good"),
@@ -337,18 +348,34 @@ COMBO_NAMES: dict[int, str] = {0: "无", 1: "FC", 2: "FC+", 3: "AP", 4: "AP+"}
 COMBO_AP = 3
 #: AP+ 的编号。
 COMBO_AP_PLUS = 4
-#: **会忽略百分比**的等级。
+#: **会忽略百分比**的等级 —— 现在**只剩 AP+**。
 #:
-#: AP 只允许 CP/P ⇒ 普通音符一颗都不扣分，达成率只剩
-#: ``101% - 25k / 加成理论分`` 这一串离散值（``k`` = 降成 P 的 break 数），
-#: 用户给的百分比基本取不到；AP+ 更极端，只能是 101%。
-#: 既然当约束用只会得到一个「差得很远」的结果，就干脆不当约束 ——
-#: 直接给该等级下**最好**的那一份。
+#: AP+ 只允许「普通音符 CP/P + break 全 CP」⇒ 加成必然满分 ⇒ 达成率恒为
+#: **101%**，用户给什么百分比都取不到，所以干脆不当约束：直接给这一档。
 #:
-#: ⚠️ **只忽略百分比，星级照常生效**（2026-09-26 订正）。这两档的达成率与
-#: DX 分是**两个独立的旋钮**：达成率由「break 降了几颗」决定，DX 分由
-#: 「有多少普通音符是小 P」决定。所以星级完全可以照要求给。
-COMBO_LOCKED: tuple[int, ...] = (3, 4)
+#: ⚠️ **AP（3）从 2026-09-27 起不再忽略百分比** —— 用户要求「百分比除了
+#: AP+ 等级外是必要的」。AP 的达成率虽然也是一串离散值，但**可以按用户给的
+#: 百分比挑**（见 :data:`AP_MIN_PERCENT`），挑不到就报错，而不是默默忽略。
+#:
+#: ⚠️ 这两档都**只忽略百分比，星级照常生效**（2026-09-26 订正）。
+#: 达成率与 DX 分是**两个独立的旋钮**：达成率由「break 降了几颗」决定，
+#: DX 分由「有多少普通音符是小 P」决定。
+COMBO_PERCENT_IGNORED: tuple[int, ...] = (COMBO_AP_PLUS,)
+
+#: AP 的达成率**不可能**低于这个数（单位 1/10000 %）—— 低于它直接报「不可达」。
+#:
+#: 推导（与谱面无关，任何谱面都成立）：AP 只允许 CP/P，于是
+#:
+#: * 常规分必然满分（普通音符 CP 与 P 同分），扣分**只**来自 break 的加成；
+#: * AP 要求「至少一颗 break 是小 P」（否则加成满分 ⇒ 判成 AP+），
+#:   而 break 的小 P 每颗扣 25 点加成；
+#: * 加成理论分 = ``100 × break 数``，所以最大扣分 = ``25 × break 数 /
+#:   (100 × break 数) = 0.25`` 个百分点。
+#:
+#: ⇒ **AP 的达成率恒在 ``[100.75%, 101%)`` 之内**。取 100.5 当门槛是留了余量
+#: 的**与谱面无关**的下界（用户 2026-09-27 口径：「用户输出 100.5 以下直接
+#: 提示不可达」）。
+AP_MIN_PERCENT = 1005000
 
 #: 解析用的别名（全小写）→ 等级。
 COMBO_ALIASES: dict[str, int] = {
@@ -617,17 +644,18 @@ class Solution:
 
 def solve(
     zone_counts: dict[str, int], target: int, want_star: int,
-    combo: int = COMBO_ANY, *, dx_full: bool = False, strict: bool = True,
+    combo: int | None = None, *, dx_full: bool = False, strict: bool = True,
     budget: float | None = None,
 ) -> tuple[Solution | None, str | None]:
     """求「达成率 ≥ ``target`` 且 DX 落在指定星级区间」的最小可达达成率。
 
     :param target: 目标达成率，单位 1/10000 %（``1000000`` = 100.0%）
     :param want_star: 目标星级 0-5，或 :data:`STAR_ANY`（**不约束 DX**）
-    :param combo: 连击等级（0-4），或 :data:`COMBO_ANY` 表示不限。
+    :param combo: 连击等级 ``0``-``4``，或 ``None`` = **不限**。
         **是「恰好等于」而不是「不低于」** —— 想要 FC 就必须留一颗 Good，
         想要 AP 就必须留一颗 break 小 P，否则会被判成更高一档。
         见 :data:`COMBO_ALLOWED` / :data:`COMBO_NEED`。
+        ⚠️ **没有 -1 这一档**：不限不是等级，是「没有等级」（``None``）。
     :param dx_full: ``True`` 时把 deficit 钉成 0 —— DX 拿满分（``dx理论``）。
     :param strict: ``True`` = DX 必须落进 :func:`dx_pick_band` 的**推荐段**
         （区间的 30%-70%，5★ 是 10%-50%）；``False`` = 退回该星级的**完整**
@@ -828,7 +856,7 @@ def solve(
                 best = (obj, l_val, b_val, deficit, uses)
     if best is None:
         # combo 等级是「恰好」约束，取不到解时多半是它卡住的 —— 换个文案更好懂
-        return None, ("estimate.combo_unreachable" if combo != COMBO_ANY
+        return None, ("estimate.combo_unreachable" if combo is not None
                       else "estimate.no_solution")
 
     _obj, _l, _b, deficit, uses = best
@@ -856,7 +884,7 @@ def solve(
         return None, "estimate.no_solution"
     if want_star != STAR_ANY and stars != want_star:
         return None, "estimate.no_solution"
-    if combo != COMBO_ANY and combo_status(counts) != combo:
+    if combo is not None and combo_status(counts) != combo:
         return None, "estimate.combo_unreachable"
 
     if achievement == target:
@@ -1009,8 +1037,9 @@ class Estimate:
     pick_band: tuple[int, int] | None
     """本次实际使用的**推荐 DX 区间** ``(下界, 上界)``；``None`` = 没套区间。
     结果落在区间外说明推荐段取不到、退回了完整星级区间（见 :func:`dx_pick_band`）。"""
-    combo: int
-    """要求的 combo 等级（0-4），或 :data:`COMBO_ANY`。"""
+    combo: int | None
+    """要求的 combo 等级（``0``-``4``），或 ``None`` = **不限**。
+    ⚠️ **没有 -1 这一档** —— 不限不是等级，是「没有等级」。"""
     break_p: int | None
     """``x小`` 指定的 break 小 P 数；没用这种写法时为 ``None``。"""
     borders: list[int]
@@ -1116,17 +1145,30 @@ def parse_dx_full(text: str) -> bool:
 
 
 def parse_combo(text: str) -> int | None:
-    """解析 combo 等级 → 0-4。收 ``0``-``4`` / ``FC`` / ``FC+`` / ``AP`` / ``AP+``。
+    """解析 combo 等级 → ``0``-``4``。收 ``0``-``4`` / ``FC`` / ``FC+`` / ``AP`` / ``AP+``。
 
-    大小写不敏感，也收全角 ``＋``。空串返回 :data:`COMBO_ANY`（不限）——
-    参数省略时走的就是这条路。
+    大小写不敏感，也收全角 ``＋``。
+
+    ⚠️ **空串与不认识都返回 ``None``** —— 因为「不限」不是一档等级
+    （**没有 -1**），它和「看不懂」的区别由调用方按 ``text.strip()`` 判：
+    空 = 用户没写 = 不限；非空而解析不出来 = 看不懂（见 :func:`estimate`）。
+    要「只认认得出来的写法」用 :func:`is_combo`。
     """
     if not isinstance(text, str):
         return None
     raw = text.strip()
     if not raw:
-        return COMBO_ANY
+        return None
     return COMBO_ALIASES.get(raw.lower())
+
+
+def is_combo(text: str) -> bool:
+    """是不是一个**认得出来**的连击等级写法（``FC`` / ``AP+`` / ``3`` …）。
+
+    ``""`` 与乱写的串都返回 ``False`` —— 参数整理层用它判断某个 token
+    该不该落进 combo 那一格（见 ``command_router._estimate_args``）。
+    """
+    return parse_combo(text) is not None
 
 
 #: ``x小`` / ``x小P`` 写法。``小`` 后面可跟一个 ``p`` / ``P``。
@@ -1151,26 +1193,6 @@ def parse_break_p(text: str) -> int | None:
     return int(matched.group(1)) if matched else None
 
 
-def ap_best_target(
-    zone_counts: dict[str, int], normal: int, bonus: int,
-) -> int | None:
-    """AP 能达到的**最高**达成率 —— 「恰好降 1 颗 break 小 P」的那一份。
-
-    AP 与 AP+ 的差别就在「break 有没有小 P」：一颗都不降 ⇒ 加成满分 ⇒
-    达成率 101% ⇒ 被游戏判成 **AP+**。所以「最好的 AP」= 恰好降一颗。
-
-    :returns: 达成率（单位 1/10000 %）；**break 一颗都没有时返回 ``None``** ——
-        那种谱面上全 CP 就是 AP+，AP 根本判不出来。
-    """
-    if not zone_counts["break"]:
-        return None
-    probe = {f"{z}{r}": 0 for z in ZONES for r in RANKS}
-    for z in ZONES:
-        probe[f"{z}CriticalPerfect"] = zone_counts[z]
-    probe["breakCriticalPerfect"] -= 1
-    probe["breakPerfect"] += 1
-    return achievement_int(probe, normal, bonus)
-
 
 def estimate(
     song_id: str, difficulty: str, percent: str = "", stars: str = "",
@@ -1178,10 +1200,13 @@ def estimate(
 ) -> tuple[Estimate | None, str | None]:
     """``/估分`` 的主入口。
 
-    :param percent: 目标达成率；**AP / AP+ 下会被忽略**（见下），也可留空。
+    :param percent: 目标达成率。**除 ``AP+`` 外必填**（用户 2026-09-27 口径）——
+        ``x小`` / ``dx理论`` 自带达成率，也不用给；只有 ``AP+`` 是「给什么
+        都取不到」，所以直接忽略。
     :param stars: 星级 —— ``3`` / ``3星`` / ``★★★``，或 ``dx理论``（DX 满分）。
         空串 = **不限**（DX 不受约束，按自然落点的星级再取推荐段）。
-    :param combo: combo 等级；空串 = 不限（:data:`COMBO_ANY`）。
+    :param combo: combo 等级 ``0``-``4``（也收 ``FC`` / ``FC+`` / ``AP`` / ``AP+``）；
+        空串 = **不限**。⚠️ **没有 -1 这一档** —— 不限不是等级。
     :param break_p: ``x小`` / ``x小P`` 写法 —— **break 的小 P 数**。
         给了它，达成率与连击等级就随之确定（见 :func:`build_break_p_solution`），
         百分比不再需要；星级仍可选，用来调 DX 分。
@@ -1191,27 +1216,37 @@ def estimate(
         ``command_router._is_failure``）都不必再知道每个键要什么占位符。
         ``judge.no_chart`` 的占位符要列可用难度，只有这里拿得到，也只能在这里渲染。
 
-    ⚠️ **AP / AP+ 只忽略百分比，不忽略星级**（见 :data:`COMBO_LOCKED`）：这两档
-    把可用判定档位锁死之后，达成率由「物量 + break 数」唯一决定 —— 普通音符
-    一颗都不扣分，只有 break 降成 P 才会扣，粒度是 ``25 / 加成理论分``。
-    以 147 为例 AP 只能是 ``101% - 25k/1400``（``k`` = break 的 P 数），最接近
-    100.0% 的可行值是 100.75%。既然用户给的数取不到，就干脆别当约束用，
-    直接给该等级下**最好**的那一份。
-    但 **DX 分是另一个旋钮**（「有多少普通音符是小 P」），星级照常生效。
+    ⚠️ **AP / AP+ 都只忽略百分比，不忽略星级**（见 :data:`COMBO_PERCENT_IGNORED`）。
+    这两档把可用判定档位锁死之后，普通音符一颗都不扣分，只有 break 降成 P 才扣，
+    粒度是 ``25 / 加成理论分`` —— 以 147 为例，AP 只能是
+    ``101% - 25k/1400``（``k`` = break 的 P 数），落在 100.75% ~ 100.98%。
+
+    * ``AP+`` 只有 101% 一个值 ⇒ 百分比**没有意义**，忽略它（用户口径：
+      「AP+ 直接输出回复忽略达成率」）。
+    * ``AP`` **要用**百分比：在那串离散值里挑用户要的那一档。低于
+      :data:`AP_MIN_PERCENT`（100.5%）直接报「不可达」，而不是默默给 100.98%
+      —— 用户填 100.0 却拿到 100.98 会以为算错。
+
+    两者都 **DX 分是另一个旋钮**（「有多少普通音符是小 P」），星级照常生效。
     """
     index = jd.resolve_difficulty(difficulty)
     if index is None:
         return None, replies.text("judge.bad_difficulty", value=difficulty)
 
     # combo 先解析：它决定了百分比还要不要
-    want_combo = parse_combo(combo)
-    if want_combo is None:
-        return None, replies.text("estimate.bad_combo", value=combo)
+    # ⚠️ 「不限」与「看不懂」都解析成 None —— 靠**串本身非空**来区分
+    # （不限不是一档等级，见 parse_combo）
+    if combo.strip():
+        want_combo = parse_combo(combo)
+        if want_combo is None:
+            return None, replies.text("estimate.bad_combo", value=combo)
+    else:
+        want_combo = None                          # 不限
 
     want_break_p = parse_break_p(break_p) if break_p.strip() else None
     if break_p.strip() and want_break_p is None:
         return None, replies.text("estimate.bad_break_p", value=break_p)
-    if want_break_p is not None and want_combo not in (COMBO_ANY, COMBO_AP):
+    if want_break_p is not None and want_combo not in (None, COMBO_AP):
         # ``x小`` 就是 AP 的写法，与别的 combo 等级互斥
         return None, replies.text("estimate.combo_conflict",
                                   combo=COMBO_NAMES.get(want_combo, combo))
@@ -1227,8 +1262,8 @@ def estimate(
         if want_star is None:
             return None, replies.text("estimate.bad_stars", value=stars)
 
-    # 百分比的**语法**先校验（「看不懂的百分比」比「查不到歌」更值得先说），
-    # 但数值怎么用要等拿到物量 —— AP 得按 break 数反推「最好的那一份」。
+    # 百分比的**语法**先校验（「看不懂的百分比」比「查不到歌」更值得先说）。
+    # 数值的语义校验（AP 的下界）也放这里 —— 那条界与谱面无关（见 AP_MIN_PERCENT）。
     percent_value = None
     if percent.strip():
         percent_value = parse_percent(percent)
@@ -1237,7 +1272,13 @@ def estimate(
         if percent_value > ACH_MAX:
             # 写法合法但超出理论上限（101%）—— 与「看不懂」分开，提示才有用。
             return None, replies.text("estimate.too_high")
-    elif want_break_p is None and want_combo not in COMBO_LOCKED and not want_dx_full:
+        if want_combo == COMBO_AP and percent_value < AP_MIN_PERCENT:
+            # AP 的达成率有**下界**（恒 ≥ 100.75%，见 AP_MIN_PERCENT）——
+            # 低于门槛直接说不可达，别默默给 100.98% 让用户以为算错。
+            return None, replies.text("estimate.ap_unreachable", value=percent)
+    elif (want_break_p is None and not want_dx_full
+          and want_combo != COMBO_AP_PLUS):
+        # 2026-09-27 起**只有 AP+ 可以不填百分比**（它给什么都取不到）。
         return None, replies.text("estimate.need_percent")
 
     try:
@@ -1268,21 +1309,20 @@ def estimate(
     normal, bonus = theory(zone_counts)
     borders, full = star_borders(sum(zone_counts.values()))
 
-    # ---- 定 target：百分比被锁死的三种情况改成「该等级下最好的一份」 ----
+    # ---- 定 target ----
     if want_break_p is not None:
         target = 0                                 # 由构造直接得出，随后回填
     elif want_dx_full:
         # ``dx理论`` ⇒ 全 CP ⇒ 达成率必然是 101%，百分比给什么都取不到
         target = ACH_MAX
-    elif want_combo in COMBO_LOCKED:
+    elif want_combo == COMBO_AP_PLUS:
+        # AP+ 只有 101% 一个值 ⇒ 百分比没有意义，忽略它（用户口径：
+        # 「AP+ 直接输出回复忽略达成率」）。
         target = ACH_MAX
-        if want_combo == COMBO_AP:
-            best = ap_best_target(zone_counts, normal, bonus)
-            if best is None:
-                return None, replies.text("estimate.combo_unreachable",
-                                          combo=COMBO_NAMES[COMBO_AP])
-            target = best
     else:
+        # ⚠️ **AP 走这里**（2026-09-27 起）：在那串离散值里挑用户要的那一档。
+        # 以前是直接顶替成「AP 能达到的最高达成率」，等于默默忽略百分比 ——
+        # 用户填 100.0 却拿到 100.98% 会以为算错。
         target = percent_value
 
     def pick_band(star: int) -> tuple[int, int] | None:
@@ -1445,7 +1485,8 @@ def combo_summary(est: Estimate) -> tuple[str, str]:
     文字版与图片版共用，免得一边显示「不限」另一边显示空白。
     """
     label = combo_label(est.combo_flag) or COMBO_NAMES[0]
-    want = "不限" if est.combo == COMBO_ANY else COMBO_NAMES.get(est.combo, "")
+    # ``None`` = 用户没要求（不限）；没有 -1 这一档，所以判 None 而不是判负数
+    want = "不限" if est.combo is None else COMBO_NAMES.get(est.combo, "")
     return want, label
 
 
@@ -1488,13 +1529,17 @@ def ignored_note(est: Estimate) -> str | None:
 
     * ``x小`` —— 达成率与连击等级**都由 break 的小 P 数推出来**；
     * ``dx理论`` —— DX 满分 ⇒ 全 CP ⇒ 达成率必然是 101%；
-    * AP / AP+ —— 可用档位被锁死，达成率只剩一串离散值。
+    * **``AP+``** —— 可用档位被锁死，达成率只剩 101% 一个值。
+
+    ⚠️ **``AP`` 不在这个名单里**（2026-09-27 起）：它**要用**用户给的百分比，
+    所以「目标」就是用户填的那个数，没什么要说明的（见
+    :data:`COMBO_PERCENT_IGNORED`）。
     """
     if est.break_p is not None:
         return replies.text("estimate.break_p_note", count=est.break_p)
     if est.dx_full:
         return replies.text("estimate.dx_full_note")
-    if est.combo not in COMBO_LOCKED:
+    if est.combo not in COMBO_PERCENT_IGNORED:
         return None
     return replies.text("estimate.ignored", combo=COMBO_NAMES[est.combo])
 
@@ -1535,14 +1580,14 @@ def estimate_reply(
     song_id: str, difficulty: str, percent: str = "", stars: str = "",
     combo: str = "", break_p: str = "", *, session_key: str | None = None,
 ) -> str:
-    """``/估分 <歌曲id> <难度> <百分比> [星级] [combo]`` 的回复。
+    """``/估分 <歌曲id> <难度> <百分比> [dx星级] [combo等级]`` 的回复。
 
     成功时把结果**存进一轮缓存**（见 :data:`CACHE`）—— 目前只存不取，
     留着接口等产品决定下一轮拿它做什么。
 
     :param stars: 省略时**不约束 DX** —— 先按自然落点求出星级，再取那一档的
         推荐段（见 :func:`dx_pick_band`）；写 ``dx理论`` 则要求 DX 满分。
-    :param combo: 省略时按「不限」（:data:`COMBO_ANY`）。
+    :param combo: 省略时按「**不限**」（``None`` —— 没有 -1 这一档）。
     :param break_p: ``x小`` / ``x小P`` 写法（break 的小 P 数）。
     :param session_key: 会话标识，作为缓存键；``None`` / 空串则不缓存。
     :return: 渲染好的文本；参数不认识 / 取不到解时是失败文案

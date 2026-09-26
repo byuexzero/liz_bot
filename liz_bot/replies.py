@@ -141,9 +141,11 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # combo 等级是「恰好」约束：{combo} 是要求（FC / FC+ / AP / AP+ / 无），
     # {label} 是这份判定分布实际会显示的连击状态（两者必然一致）。
     "estimate.combo_req": (str, ("combo", "label")),
-    # AP / AP+ 会忽略**百分比**（见 score_estimate.COMBO_LOCKED），
-    # 结果行里的「目标」是算法自己取的该等级上限，必须说明白，否则用户以为是他要的数。
-    # ⚠️ 只忽略百分比 —— **星级照常生效**（DX 分由「多少普通音符是小 P」决定）。
+    # **只有 AP+** 会忽略百分比（见 score_estimate.COMBO_PERCENT_IGNORED）：
+    # 它只有 101% 一个值，结果行里的「目标」是算法自己取的，必须说明白，
+    # 否则用户以为是他要的数。
+    # ⚠️ AP **不忽略**（2026-09-27 起它要用百分比选档，挑不到就报不可达）；
+    # ⚠️ 两者都只忽略百分比 —— **星级照常生效**（DX 分由「多少普通音符是小 P」决定）。
     "estimate.ignored": (str, ("combo",)),
     "estimate.scale": (str, ("normal", "bonus")),
     # 判定明细表的列头（CP/P/Gr/Gd/Ms 是 ASCII，不进文案）
@@ -175,6 +177,9 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # dx理论 把 DX 钉成满分 ⇒ 全 CP ⇒ 达成率必然 101%，百分比同样失去意义
     "estimate.dx_full_note": (str, ()),
     "estimate.need_percent": (str, ()),
+    # AP 的达成率有下界（恒 ≥ 100.75%，见 score_estimate.AP_MIN_PERCENT）——
+    # 低于门槛直接说不可达，别默默给一个高得多的数。
+    "estimate.ap_unreachable": (str, ("value",)),
     "estimate.too_high": (str, ()),
     "estimate.no_solution": (str, ()),
     "estimate.combo_unreachable": (str, ("combo",)),

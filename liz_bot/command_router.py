@@ -444,7 +444,8 @@ def _estimate_args(cmd_params) -> tuple[str, str, str, str, str, str]:
     percent = stars = combo = break_p = ""
 
     def is_combo(tok: str) -> bool:
-        return score_estimate.parse_combo(tok) not in (None, score_estimate.COMBO_ANY)
+        # 「不限」不是一档等级（没有 -1），所以这里只问「认不认得出来」
+        return score_estimate.is_combo(tok)
 
     def is_star(tok: str) -> bool:
         """星级槽认得两种写法：星级本身，以及 ``dx理论``（DX 满分）。"""
@@ -659,7 +660,8 @@ _FAILURE_KEYS = (
     "estimate.bad_break_p",        # x小 写法看不懂 / 超出 break 数
     "estimate.combo_conflict",     # x小 与别的 combo 等级冲突
     "estimate.dx_conflict",        # dx理论 与 x小 互斥（都钉死 DX 分）
-    "estimate.need_percent",       # 没给百分比（只有 AP / AP+ 可以不给）
+    "estimate.need_percent",       # 没给百分比（只有 AP+ 可以不给）
+    "estimate.ap_unreachable",     # AP 的达成率有下界，给低了取不到
     "estimate.too_high",           # 目标超过 101%
     "estimate.no_solution",        # 没找到可行分布
     "estimate.combo_unreachable",  # 该 combo 等级下取不到解
