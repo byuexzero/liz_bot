@@ -21,8 +21,8 @@
   "maimai": {
     "unparsed": "未解析的指令",
     "sync_names": ["无", "FS", "FS+", "FDX", "FDX+", "同步游玩"],
-    "bad_params": "参数不够哦～ 用法：{usage}",
-    "too_many_params": "参数给多了～ 用法：{usage}",
+    "bad_params": "参数不够哦～\n{usage}",
+    "too_many_params": "参数给多了～\n{usage}",
     "upload_usage": "#上传 <二维码> <歌曲id> <难度> <达成率>\n      [dx分] [combo] [sync] [maxCombo]\n只给二维码 → 用本会话最近一次 /估分",
     "upload_usage_fields": "字段：<歌曲id> <难度> <达成率>\n      [dx分] [combo] [sync] [maxCombo]\n达成率写 100.8750 这样的小数即可",
     "upload_need_qr": "第一个参数要放二维码（SGWCMAID 开头那串）～\n{usage}",
@@ -48,7 +48,7 @@
     "upload_note_derived": "顺手补上：{fields}",
     "upload_note_missing": "⚠️ 这块碎片 Liz 拼不完整\n空白的碎片进不了塔",
     "upload_ok": "✅ 碎片已经堆进塔了～",
-    "upload_fail": "❌ 碎片没能堆进塔",
+    "upload_fail": "乐曲碎片没能堆进塔，liz的干涉被拦截了",
     "upload_landed": "塔里多了一块（{before} → {after}）",
     "upload_not_landed": "Liz干涉失败了...\n7sRef的防护过于严密，没有完成上传任务",
     "upload_no_readback": "⚠️ Liz 看不清塔里，不知道堆没堆进去"

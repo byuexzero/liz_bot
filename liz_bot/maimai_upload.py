@@ -466,9 +466,13 @@ class UploadReport:
 
     ok: bool
     stage: str
+    #: 失败时的**原样异常文本**（``run_workflow`` 给的）。⚠️ **只给日志看** ——
+    #: 回复里**不出现**它（十几行 + 排查说明，用户 2026-09-27 明确要求去掉）。
+    #: 见 :func:`render` 的 docstring 与 ``upload()`` 里那行 ``logger.warning``。
     message: str
     score: dict[str, Any]
     note: str | None = None
+    #: 上传前后回读到的 ``playCount``；任一为 ``None`` 表示回读没成功。
     before: int | None = None
     after: int | None = None
     calls: list[str] = field(default_factory=list)
@@ -876,6 +880,13 @@ def render(
 
     ``id`` 放在**第二行开头**（而不是标题行末尾）：曲名长了标题行必然折行，
     放末尾就可能被折成「id 14」+「3」—— 数字被切开比折行本身更糟。
+
+    失败时**只说结论，不带原因**
+    ----------------------------
+    回复里**不出现** ``report.message``（那是 ``run_workflow`` 的原样异常文本，
+    十几行、且含「三种已知成因」这类排查说明）。原因由日志承担
+    （``upload()`` 的 ``logger.warning("传分失败：%s", ...)``）。
+    落库状态也只在**上传成功**或**确实落库**时才单独成行 —— 见下面的注释。
     """
     score = report.score
     lines: list[str] = [
@@ -902,18 +913,29 @@ def render(
     if report.ok:
         lines.append(replies.text("maimai.upload_ok"))
     else:
+        # ⚠️ **真实原因刻意不进回复**（用户 2026-09-27 实测反馈）。
+        # ``report.message`` 是 ``run_workflow`` 的原样异常文本，动辄十几行，
+        # 还夹着「三种已知成因，按顺序排除」这类排查说明 —— 群里发出去是一屏日志。
+        # 它**没有丢**：``upload()`` 里已有
+        # ``logger.warning("传分失败：%s", result.message)``，
+        # 排查改由日志承担（与「文案不用专业术语」是同一条原则）。
         lines.append(replies.text("maimai.upload_fail"))
-        lines.extend(_wrap_cells(report.message))
 
+    # ---- 落库状态 ----
+    # ⚠️ 上传本身失败时**不再补「没落库」**：那是同一件事说两遍（用户实测时
+    #    回复里同时出现「碎片没能堆进塔」与「Liz干涉失败了…」）。
+    #    但 ``landed`` 为真时**照说** —— 「上传中途出错、成绩其实已经进去了」
+    #    是好消息，藏起来反而更糟。
     landed = report.landed
-    if landed is None:
-        lines.append(replies.text("maimai.upload_no_readback"))
-    elif landed:
+    if landed:
         lines.append(replies.text(
             "maimai.upload_landed", before=report.before, after=report.after
         ))
-    else:
-        lines.append(replies.text("maimai.upload_not_landed"))
+    elif report.ok:
+        if landed is None:
+            lines.append(replies.text("maimai.upload_no_readback"))
+        else:
+            lines.append(replies.text("maimai.upload_not_landed"))
     if cooldown is not None and cooldown > 0:
         lines.append(replies.text(
             "maimai.upload_cooldown_hint", seconds=int(cooldown) + 1
