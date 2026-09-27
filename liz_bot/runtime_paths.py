@@ -9,7 +9,11 @@
 ===========  ==================  ================
 ``ai_chat/``  ``qqgroup-ai-bot``  AI 会话历史
 ``bot_log/``  ``qqgroupbot``      botpy 运行日志
+``upload_queue/``  两者           ``#上传`` 本机助手中转队列
 ===========  ==================  ================
+
+（``upload_queue/`` 只有开了远端上传 ``MM_REMOTE_UPLOAD=1`` 才真的被用；
+本机助手也在写它 —— 所以它必须落在**两边都看得见**的数据卷上。）
 
 而 ``music_data.json`` / ``aliases.json`` / ``texts/replies.json`` 这些
 曲库、别名库与回复文本文件都是**只读**的，随镜像一起分发即可，
@@ -95,6 +99,17 @@ AI_CHAT_DIR = _pick("ai_chat", _HERE / "ai_chat")
 #: botpy 日志目录。
 LOG_DIR = _pick("bot_log", _REPO_ROOT / "bot_log")
 
+#: ``#上传`` 的「本机助手」任务队列（见 :mod:`liz_bot.upload_agent`）。
+#:
+#: ⚠️ 里面**会短暂存在完整二维码**（等同扫卡那张卡）。放在数据卷上是因为
+#: 本机助手要经 SSH 来取；``deploy/data/`` 已被 ``.gitignore`` 排除，
+#: 且任务文件按 0600 写入、取走后立刻删除（见 ``upload_agent`` 的说明）。
+UPLOAD_QUEUE_DIR = _pick("upload_queue", _HERE / "upload_queue")
+
+#: 队列下的三个子目录名。``pending`` 待取 / ``claimed`` 已被本机助手领走 /
+#: ``done`` 结果待服务器回收。分开是为了「卡在哪一步」一眼可见。
+UPLOAD_QUEUE_SUBDIRS = ("pending", "claimed", "done")
+
 
 def is_volume_backed() -> bool:
     """数据是否落在持久化卷上（即是否设置了 ``LIZ_DATA_DIR``）。"""
@@ -108,6 +123,7 @@ def describe() -> list[str]:
         f"数据来源：{origin}",
         f"AI 会话：{AI_CHAT_DIR}",
         f"日志目录：{LOG_DIR}",
+        f"上传队列：{UPLOAD_QUEUE_DIR}",
         f"曲库基线：{SONG_FILE_PATH}",
         f"别名基线：{ALIAS_FILE_PATH}",
         f"回复文本：{TEXT_FILE_PATH}",
@@ -136,5 +152,14 @@ def ensure_dirs() -> list[str]:
             os.makedirs(path, exist_ok=True)
         except OSError as exc:
             notes.append(f"⚠ {label}创建失败：{path}（{exc}）")
+
+    # 3. `#上传` 的本机助手中转队列（未启用远端上传时建了也无害，
+    #    只是空目录）。三个子目录一起建，免得本机助手要自己 mkdir。
+    for sub in ("",) + UPLOAD_QUEUE_SUBDIRS:
+        try:
+            os.makedirs(os.path.join(UPLOAD_QUEUE_DIR, sub), exist_ok=True)
+        except OSError as exc:
+            notes.append(f"⚠ 上传队列目录创建失败：{UPLOAD_QUEUE_DIR}（{exc}）")
+            break
 
     return notes
