@@ -158,6 +158,10 @@ liz_bot/emoji_gif
 # 本地彩排产生的数据卷（local_rehearsal.py 的默认卷目录）
 .local_volume
 
+# deploy_maimai.sh 的临时归档（在仓库根，含 maimai/ 工具链源码）。
+# 正常有 trap 清理，但中断时会残留 —— 不进镜像，见 .gitignore 同名规则。
+.liz_maimai_upload.tar.gz
+
 # 更新公告的**成图**（更新公告_verX.Y.png，约 0.5MB）——
 # 它是 `_tools/make_notice_image.py` 渲染出来、**手工发给群友**的发布产物。
 # 源文件 .md 已被上面 `**/*.md` 挡住；成图这条单独列，因为

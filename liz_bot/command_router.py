@@ -910,20 +910,22 @@ def _upload_module():
     return module
 
 
-async def _m_upload(cmd_params, session_key):
+async def _m_upload(cmd_params, session_key, *, notify=None):
     """``#上传 <二维码> [<成绩字段…>]`` —— 传一份成绩上去。
 
     业务全在 :mod:`liz_bot.maimai_upload` 里（成绩来源、判定明细补全、探针、
     渲染），这里只判断「工具链在不在」—— 因为延迟加载就发生在本模块。
+
+    :param notify: 见 :func:`handle_maimai_command` 的 ``notify``。
     """
     module = _upload_module()
     if module is None:
         return replies.text("maimai.upload_no_toolchain")
-    return await module.handle_upload(cmd_params, session_key)
+    return await module.handle_upload(cmd_params, session_key, notify=notify)
 
 
-#: ``key`` → 处理函数。签名统一 ``(参数列表, 会话键) -> 回复文本`` ——
-#: 比 ``/`` 指令少两个参数（没有 ``miss`` 哨兵、没有 ``rich``），因为舞萌指令
+#: ``key`` → 处理函数。签名统一 ``(参数列表, 会话键, *, notify=None) -> 回复文本``
+#: —— 比 ``/`` 指令少两个参数（没有 ``miss`` 哨兵、没有 ``rich``），因为舞萌指令
 #: 目前只回文本。
 _MAIMAI_HANDLERS: dict[str, Callable] = {
     "upload": _m_upload,
@@ -1319,7 +1321,8 @@ def _render_rich(entry: Command, cmd_params: list, fallback: str) -> "RichReply 
     return RichReply(png=png, filename=filename, fallback=fallback)
 
 
-async def handle_maimai_command(cmd_name, cmd_params, *, session_key=None) -> str:
+async def handle_maimai_command(cmd_name, cmd_params, *, session_key=None,
+                                notify=None) -> str:
     """舞萌指令（``#`` 前缀）的统一入口 —— 查表 → 校验个数 → 分发。
 
     ==================  ====================================================
@@ -1327,8 +1330,14 @@ async def handle_maimai_command(cmd_name, cmd_params, *, session_key=None) -> st
     ==================  ====================================================
     表里认得            交给 :data:`_MAIMAI_HANDLERS` 里对应的处理函数
     表里不认得          ``maimai.unparsed``（固定一句「未解析的指令」）
-    参数个数不对        ``maimai.bad_params``（带该指令的完整用法）
+    参数**不够**        ``maimai.bad_params``（带该指令的完整用法）
+    参数**太多**        ``maimai.too_many_params``（同上）
     ==================  ====================================================
+
+    ⚠️ 「不够」与「太多」**刻意分成两条文案**（2026-09-27 用户要求）：原来共用
+    「参数个数不对」，而用户看到它时最想知道的恰恰是**往哪个方向改**。
+    （``/`` 命名空间的 ``router.bad_params`` / ``router.too_many_params`` 早就
+    是分开的，这里只是对齐。）
 
     **不认得的指令只回一句话，不提示「你是不是想打 XXX」** —— 舞萌那边的指令
     名字（``b50`` / ``b40`` / ``ap`` …）将来会一批批接进来，现在拿模糊匹配去猜，
@@ -1340,6 +1349,11 @@ async def handle_maimai_command(cmd_name, cmd_params, *, session_key=None) -> st
     :param session_key: 会话标识。**``#上传`` 靠它读 ``/估分`` 的会话缓存**
         （见 :func:`_m_upload`）；``None`` / 空串时「没缓存」那条分支照走，
         只是永远取不到缓存。
+    :param notify: ``async (text) -> None``，**任务开始前先发一条**的通路。
+        ``#上传`` 真跑约 80 秒，期间用户什么都收不到（2026-09-27 用户要求补上
+        预计等待时长）。它是**可选的** —— ``None`` 时静默跳过，所以自检脚本与
+        等价性测试直接调本函数不受影响。由 ``qqgroupbot`` 注入（走被动回复
+        ``msg_seq=2``，**不消耗主动消息配额**）。
     :return: 回复文本（本命名空间目前只产文本，没有图片版）
 
     加一条舞萌指令要动**四个地方**，少一个都有守卫拦下：
@@ -1357,14 +1371,13 @@ async def handle_maimai_command(cmd_name, cmd_params, *, session_key=None) -> st
 
     params = list(cmd_params or ())
     count = len(params)
-    if count < entry.min_params or (
-        entry.max_params is not None and count > entry.max_params
-    ):
-        return replies.text(
-            "maimai.bad_params", usage=replies.text(_MAIMAI_USAGE[entry.key])
-        )
+    usage = replies.text(_MAIMAI_USAGE[entry.key])
+    if count < entry.min_params:
+        return replies.text("maimai.bad_params", usage=usage)
+    if entry.max_params is not None and count > entry.max_params:
+        return replies.text("maimai.too_many_params", usage=usage)
 
-    return await _MAIMAI_HANDLERS[entry.key](params, session_key)
+    return await _MAIMAI_HANDLERS[entry.key](params, session_key, notify=notify)
 
 
 # ---------------------------------------------------------------------------
@@ -1625,7 +1638,8 @@ async def _resume_pending(
 
 
 async def reply_text(
-    message_content: str, *, session_key: str | None = None, rich: bool = False
+    message_content: str, *, session_key: str | None = None, rich: bool = False,
+    notify=None,
 ) -> "str | RichReply":
     """把一条**非空**消息变成回复内容 —— 指令前缀的分发入口。
 
@@ -1649,6 +1663,9 @@ async def reply_text(
     :param rich: 允许把结果渲染成图片（见 :func:`_render_rich`）。
         ``qqgroupbot`` 传 ``True``；**自检脚本与等价性测试不传**，
         于是它们拿到的永远是 ``str``，行为与加这个参数之前完全一致。
+    :param notify: ``async (text) -> None``，见 :func:`handle_maimai_command`。
+        只对 ``#`` 命名空间有意义（``#上传`` 要先发一句预计等待时长）；
+        ``/`` 指令与补参路径都不用，传了也会被忽略。
     :return: 回复文本；``rich=True`` 且能出图时是 :class:`RichReply`
     """
     # ``#`` 命名空间：认得的走实现，认不得的统一回「未解析的指令」。
@@ -1661,7 +1678,7 @@ async def reply_text(
         # ⚠️ ``session_key`` **必须传下去** —— ``#上传`` 要靠它读 ``/估分``
         # 留在同一会话里的缓存（见 liz_bot/maimai_upload.handle_upload）。
         return await handle_maimai_command(
-            cmd_name, cmd_params, session_key=session_key
+            cmd_name, cmd_params, session_key=session_key, notify=notify
         )
 
     cmd_name, cmd_params, is_valid = await parse_command(message_content)

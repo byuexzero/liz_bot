@@ -66,6 +66,25 @@ services:
     volumes:
       - ./data:/data
 
+      # 舞萌服务端 API 工具链 —— `#上传` 依赖它（`maimai_upload` 会 import）。
+      #
+      # ⚠️ **刻意用挂载而不是打进镜像**：这个包是一个功能完整的「把成绩写到
+      #    游戏账号上」的工具。镜像层是**可被拉取**的，`COPY . .` 把它打进去
+      #    就等于发布了它（2026-09-25 用户明确要求不要发布）。bind mount 只让
+      #    **这台机器**上的容器读得到。
+      #
+      # ⚠️ 路径写 `../maimai`（相对本文件 = 仓库根的 `maimai/`），不是
+      #    `./maimai` —— 服务器上对应 `/opt/liz_bot/maimai/`。
+      #
+      # ⚠️ 它**不在 git 里**（`.gitignore` 与 `.dockerignore` 都排除了整个包），
+      #    所以 `_tools/deploy_update.sh` 的 git 合并**碰不到它**，必须单独上传：
+      #        LIZ_NO_MUX=1 bash _tools/deploy_maimai.sh ubuntu@43.142.50.149 /opt/liz_bot
+      #    没上传 / 挂载失败时，`#上传` 会回一句「Liz 现在还够不到 7sRef～」
+      #    （见 replies.json 的 maimai.upload_no_toolchain）。
+      #
+      # ⚠️ 只读（`:ro`）—— `liz_bot/` 对它只 import、从不写。
+      - ../maimai:/app/maimai:ro
+
     # 只绑宿主机回环，**不开公网端口**。
     #
     # 这个机器人是纯出站的 WebSocket 客户端（只连 api.sgroup.qq.com），

@@ -82,6 +82,11 @@ LINE_WIDTH = 39
 
 #: 合法的难度编号 —— 与 ``maimai.typings.MusicDifficultyID`` 一致。
 #: 0-4 是常规五档，``10`` 是宴谱（Utage）。
+#:
+#: ⚠️ ``10`` **能解析但传不了**（见 :func:`handle_upload` 的宴谱闸门）。
+#: 留着它不是为了支持，而是为了让「``#上传 … 10 …``」得到一句专门的
+#: 「宴谱传不了」，而不是撞上 ``maimai.upload_bad_level`` 的
+#: 「难度要填 0-4」—— 后者会让人以为是自己写错了。
 VALID_LEVELS = frozenset({0, 1, 2, 3, 4, 10})
 
 #: 干跑用的占位 userId。``.env`` 的 ``USER_ID`` 常为空（二维码流程不需要它），
@@ -124,8 +129,14 @@ class ScoreField:
     low: int
     high: int
     #: 报「超出范围」时给用户看的边界写法（``None`` = 直接用 ``low`` / ``high``）。
-    #: 只有 ``achievement`` 需要它 —— 内部单位是 1/10000 %，而用户写的是百分比，
-    #: 直接把 ``1`` 和 ``1010000`` 摆出来只会让人更困惑。
+    #:
+    #: ⚠️ **当前没有任何渲染路径在用它们**（2026-09-27 起）：用户要求
+    #: ``maimai.upload_range`` 不再写范围，``_range_text`` 已随之删除。
+    #: 这两个字段**刻意留着** —— 它们是「这个字段的边界在哪」的事实记录，
+    #: ``low`` / ``high`` 本身仍在校验；哪天想把范围提示加回去，改文案即可，
+    #: 不必再推一遍 1/10000 % 的单位换算。
+    #: （当初只有 ``achievement`` 用得上：内部单位是 1/10000 %，而用户写的是
+    #: 百分比，直接把 ``1`` 和 ``1010000`` 摆出来只会让人更困惑。）
     low_text: str | None = None
     high_text: str | None = None
 
@@ -219,14 +230,6 @@ def _parse_sync(raw: str) -> int | None:
     return None
 
 
-def _range_text(field_meta: ScoreField) -> tuple[str, str]:
-    """「超出范围」文案里的边界写法。"""
-    return (
-        field_meta.low_text or str(field_meta.low),
-        field_meta.high_text or str(field_meta.high),
-    )
-
-
 #: 字段名 → 专用解析器。**没登记的走 ``int()``**（``musicId`` / ``deluxscoreMax``
 #: / ``maxCombo`` 就是纯数字）。分开写是为了让「每个字段收什么写法」一眼可见。
 _FIELD_PARSERS: dict[str, Callable[[str], int | None]] = {
@@ -269,15 +272,13 @@ def parse_score_params(tokens: list[str]) -> tuple[dict[str, Any] | None, str | 
                 "maimai.upload_bad_field", field=field_meta.name, value=raw
             )
         if field_meta.name == "level" and value not in VALID_LEVELS:
-            return None, replies.text(
-                "maimai.upload_bad_level", value=value,
-                levels=" / ".join(str(v) for v in sorted(VALID_LEVELS)),
-            )
+            # ⚠️ 文案里**刻意不提** ``10``（2026-09-27）—— 宴谱虽然能解析，
+            #    但紧接着就会被闸门挡下，写进「可填值」只会把人引到坑里。
+            return None, replies.text("maimai.upload_bad_level", value=value)
         if not field_meta.low <= value <= field_meta.high:
-            low, high = _range_text(field_meta)
+            # ⚠️ 刻意**不报范围**（2026-09-27 用户要求）—— 见 ScoreField.low_text。
             return None, replies.text(
                 "maimai.upload_range", field=field_meta.name, value=raw,
-                low=low, high=high,
             )
         score[field_meta.name] = value
     return score, None
@@ -359,9 +360,15 @@ def fill_note_counts(score: dict[str, Any]) -> tuple[dict[str, Any], str | None]
 
     if est is None:
         lines = [replies.text("maimai.upload_note_missing")]
-        if error:
-            # 复用估算器渲染好的原因（「没找到可行的判定分布」等）——
-            # 只说「补不出来」用户不知道该改哪个参数。
+        # 复用估算器渲染好的原因（「没找到可行的判定分布」等）——
+        # 只说「补不出来」用户不知道该改哪个参数。
+        #
+        # ⚠️ **唯独 ``song.not_found`` 不再贴一遍**：曲库没这首歌时，
+        #    标题行（``upload_title_plain``）用的就是**同一句**
+        #    「Liz没有找到这样的歌」，紧跟其后又贴一次就是逐字重复
+        #    （2026-09-27 用户要求两处「均沿用」这一句之后暴露出来的）。
+        #    比对是安全的：这条文案**没有占位符**，渲染结果就是原文。
+        if error and error != replies.text("song.not_found"):
             lines.append(error)
         return score, "\n".join(lines)
 
@@ -740,7 +747,29 @@ def dry_mode() -> bool:
     return bool(os.environ.get("MM_DRY"))
 
 
-async def handle_upload(cmd_params, session_key) -> str:
+#: 预估总耗时时额外加上的**节流开销**（秒）—— 一次上传 16 次接口调用，
+#: 每次之间要留间隔（服务端按请求量封禁，见模块 docstring 的「请求量守卫」）。
+_INTRO_OVERHEAD_SECONDS = 20
+
+
+def intro_text() -> str:
+    """上传**开始前**那句「大概要等多久」（文案见 ``maimai.upload_intro``）。
+
+    时长 = ``MM_UPLOAD_DURATION``（默认 60s 的模拟游玩）+ 16 次请求的节流开销。
+    刻意**不**在干跑时调用 —— 干跑不联网、不节流，几毫秒就完，说了反而误导
+    （见 :func:`handle_upload`）。
+    """
+    try:
+        duration = float(os.environ.get("MM_UPLOAD_DURATION")
+                         or DEFAULT_PLAY_DURATION)
+    except ValueError:
+        duration = DEFAULT_PLAY_DURATION
+    return replies.text(
+        "maimai.upload_intro", time=f"{int(duration) + _INTRO_OVERHEAD_SECONDS} 秒"
+    )
+
+
+async def handle_upload(cmd_params, session_key, *, notify=None) -> str:
     """``#上传 <二维码> [<成绩字段…>]`` —— :mod:`liz_bot.command_router` 调这个。
 
     参数怎么给（**二维码必须放第一个**）::
@@ -751,14 +780,28 @@ async def handle_upload(cmd_params, session_key) -> str:
     二维码为什么不从缓存来：它**扫一次就失效**（约 10 分钟，连只读请求也会
     到期），缓存一张码只会给用户「看着能用、其实不能用」的假象。
 
-    三个判断的**先后顺序**是有讲究的
-    --------------------------------
+    判断的**先后顺序**是有讲究的
+    ----------------------------
     1. **先判二维码** —— 「你没给码」比「正在忙」更贴近用户当下要改的东西，
        而且这个判断不需要任何计算。
-    2. **忙碌 / 冷却挡在补判定明细之前** —— 补明细要跑一次估分（有界背包 DP），
+    2. **再定成绩来源**（解析参数 / 读缓存）—— 这一步只做字符串解析与查表，
+       **不跑 DP**。放在闸门之前，是为了让「参数写错了」「宴谱传不了」这类
+       **与忙不忙无关**的结论立刻出来，而不是先让用户等 30 秒冷却、
+       等完了才被告知参数本身就不行。
+    3. **宴谱（``level=10``）在这里就挡下** —— 它必须能被解析（否则用户写
+       ``10`` 会撞上「难度要填 0-4」，答非所问），但曲库拿不到宴谱的物量、
+       补不出判定明细，传上去是一份空 playlog（服务端可能整份丢弃）。
+       见 :data:`VALID_LEVELS`。
+    4. **忙碌 / 冷却挡在补判定明细之前** —— 补明细要跑一次估分（有界背包 DP），
        反正这次也传不了，没必要白跑。
-    3. **给了字段就一定走「字段」这条路**（哪怕给少了）—— 掉回缓存会把用户
+    5. **给了字段就一定走「字段」这条路**（哪怕给少了）—— 掉回缓存会把用户
        刚打的字悄悄丢掉，而「还差几个字段」才是他真正需要看到的。
+
+    :param notify: ``async (text) -> None`` —— **任务开始前先发一条**的通路
+        （由 ``qqgroupbot`` 注入，走被动回复 ``msg_seq=2``，不消耗主动消息配额）。
+        真跑一次约 80 秒（60s 模拟游玩 + 16 次请求的节流），这期间用户什么都
+        收不到，所以闸门全过、确定要传时先发一句预计等待时长
+        （见 :func:`intro_text`）。``None`` = 不发，自检脚本与等价性测试走这条。
     """
     params = list(cmd_params or [])
     usage = replies.text("maimai.upload_usage")
@@ -767,13 +810,7 @@ async def handle_upload(cmd_params, session_key) -> str:
         return replies.text("maimai.upload_need_qr", usage=usage)
     qr, rest = params[0], params[1:]
 
-    if busy():
-        return replies.text("maimai.upload_busy")
-    waiting = cooldown_left()
-    if waiting > 0:
-        return replies.text("maimai.upload_cooldown", seconds=int(waiting) + 1)
-
-    # ---- 成绩从哪来 ----
+    # ---- 成绩从哪来（纯解析，不跑 DP）----
     if rest:
         score, error = parse_score_params(rest)
         if score is None:
@@ -785,8 +822,27 @@ async def handle_upload(cmd_params, session_key) -> str:
             return replies.text("maimai.upload_no_cache", usage=usage)
         source = replies.text("maimai.upload_source_cache")
 
-    score, note = fill_note_counts(score)
+    # ---- 宴谱：能解析，但传不了（见 docstring 第 3 条）----
+    if int(score.get("level", 0)) == 10:
+        return replies.text("maimai.upload_no_utage")
+
+    if busy():
+        return replies.text("maimai.upload_busy")
+    waiting = cooldown_left()
+    if waiting > 0:
+        return replies.text("maimai.upload_cooldown", seconds=int(waiting) + 1)
+
     dry = dry_mode()
+    # 闸门全过了、确定要传 —— 先把「大概要多久」告诉用户（真跑约 80 秒）。
+    # ⚠️ 干跑**不发**：它不联网、不节流，几毫秒就完，报个「80 秒」是误导。
+    # ⚠️ 发不出去也**不该挡住上传** —— 预告只是锦上添花，转成告警继续。
+    if notify is not None and not dry:
+        try:
+            await notify(intro_text())
+        except Exception:  # noqa: BLE001
+            logger.warning("传分：预告消息发送失败，继续上传", exc_info=True)
+
+    score, note = fill_note_counts(score)
     report = await upload(score, qr, note=note, dry=dry)
     return render(report, source=source, dry=dry, cooldown=cooldown_left())
 
@@ -844,11 +900,9 @@ def render(
         lines.append(replies.text("maimai.upload_dry"))
 
     if report.ok:
-        lines.append(replies.text(
-            "maimai.upload_ok", count=len(report.calls), stage=report.stage
-        ))
+        lines.append(replies.text("maimai.upload_ok"))
     else:
-        lines.append(replies.text("maimai.upload_fail", stage=report.stage))
+        lines.append(replies.text("maimai.upload_fail"))
         lines.extend(_wrap_cells(report.message))
 
     landed = report.landed
@@ -859,9 +913,7 @@ def render(
             "maimai.upload_landed", before=report.before, after=report.after
         ))
     else:
-        lines.append(replies.text(
-            "maimai.upload_not_landed", before=report.before, after=report.after
-        ))
+        lines.append(replies.text("maimai.upload_not_landed"))
     if cooldown is not None and cooldown > 0:
         lines.append(replies.text(
             "maimai.upload_cooldown_hint", seconds=int(cooldown) + 1

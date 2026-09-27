@@ -105,7 +105,10 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # 参数个数不对（见 command_router.MAIMAI_COMMANDS 的 min/max_params）。
     # ⚠️ 与 router.bad_params 分开两份：那边报的是 `/指令 <参数>` 的用法，
     # 这边报的是 `#上传 <二维码> …`，混用会把用户引到错误的写法上。
+    # 2026-09-27 起**再分「不够」与「太多」两条**（用户要求说明是少了还是多了）
+    # —— 用户看到「参数个数不对」时，最想知道的恰恰是往哪个方向改。
     "maimai.bad_params": (str, ("usage",)),
+    "maimai.too_many_params": (str, ("usage",)),
     # 同步状态显示名，下标即 PlaySyncFlagID（0=无 … 4=FDX+，5=同步游玩）。
     # ⚠️ 顺序必须与 maimai.typings.PlaySyncFlagID 一致，别重排。
     "maimai.sync_names": (list, ()),
@@ -117,8 +120,18 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "maimai.upload_no_cache": (str, ("usage",)),
     "maimai.upload_bad_field": (str, ("field", "value")),
     "maimai.upload_bad_level": (str, ("value",)),
-    "maimai.upload_range": (str, ("field", "value", "low", "high")),
+    # ⚠️ 刻意**不写范围**（2026-09-27 用户要求）：原文案带「（0.0001%-101%）」，
+    # 既把行撑到 43 格，下界那个 0.0001% 对用户也没有指导意义。
+    "maimai.upload_range": (str, ("field", "value")),
+    # 宴谱（level=10）能解析但**传不了** —— 见 maimai_upload.handle_upload。
+    # 它必须能解析，否则用户写 10 会撞上「难度要填 0-4」，答非所问。
+    "maimai.upload_no_utage": (str, ()),
     "maimai.upload_need_field": (str, ("count", "fields", "usage")),
+    # ⚠️ 上传**开始前**先发的一条预告（2026-09-27 用户要求）—— 真跑一次约 80 秒
+    # （60s 模拟游玩 + 16 次请求的节流），这期间用户什么都收不到。
+    # {time} 由 maimai_upload.intro_text() 按实际时长算，别硬编码。
+    # 它走的是**被动回复**（msg_seq=2），不消耗主动消息配额 —— 见 qqgroupbot。
+    "maimai.upload_intro": (str, ("time",)),
     "maimai.upload_busy": (str, ()),
     "maimai.upload_cooldown": (str, ("seconds",)),
     "maimai.upload_cooldown_hint": (str, ("seconds",)),
@@ -137,10 +150,20 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # 补明细时**顺带推算**了哪些字段（用户没给的那些），不静默补
     "maimai.upload_note_derived": (str, ("fields",)),
     "maimai.upload_note_missing": (str, ()),
-    "maimai.upload_ok": (str, ("count", "stage")),
-    "maimai.upload_fail": (str, ("stage",)),
+    # ---- 以下四条**刻意不带占位符**（2026-09-27 用户要求「提示性文本少用
+    #      专业术语」）：原先分别渲染成「已上传（完成）· 接口 16 次」、
+    #      「没成功：UpsertUserAll」、「落库确认：playCount 36 → 37」、
+    #      「没落库：playCount 36 → 36（returnCode=1 …）」——
+    #      {count} / {stage} 全是给排查用的内部量，对群友没有意义，改由日志承担
+    #      （见 maimai_upload.upload 的 logger）。
+    #      ⚠️ 占位符去掉后，调用点也**必须**跟着去掉实参，否则载入即报错。
+    #      ``upload_landed`` 是例外：它保留 {before} → {after} 这两个**数字** ——
+    #      去掉了「落库确认：playCount」这层术语壳，但「36 → 37」正是
+    #      「塔里多了一块」的证据，留着才有说服力。
+    "maimai.upload_ok": (str, ()),
+    "maimai.upload_fail": (str, ()),
     "maimai.upload_landed": (str, ("before", "after")),
-    "maimai.upload_not_landed": (str, ("before", "after")),
+    "maimai.upload_not_landed": (str, ()),
     "maimai.upload_no_readback": (str, ()),
     # ---- 谱面判定细节（/songdata，见 liz_bot/judge_detail.py）----
     # 难度显示名，下标即难度下标（0=Basic … 4=Re:Master）。

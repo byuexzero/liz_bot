@@ -113,8 +113,15 @@ _ERROR_MSG_SEQ = 2
 #:
 #: 用 3 而不是 1 或 2：``seq=1`` 可能已被那次发图占用（发图本身走
 #: ``msg_id + msg_seq=1``），``seq=2`` 是 :data:`_ERROR_MSG_SEQ` 的地盘。
-#: 三个 seq 互不相同，任何一条路径都能发得出去。
+#: 四个 seq 互不相同，任何一条路径都能发得出去。
 _RICH_FALLBACK_MSG_SEQ = 3
+
+#: 「任务进行中先发一条」用的 ``msg_seq``（见 :meth:`LizBot._notify`）。
+#:
+#: 目前只有 ``#上传`` 用：它真跑约 80 秒，开始前先发一句预计等待时长。
+#: 用 4 而不是 1 —— 那条预告发完之后，**结果**还要用 ``seq=1`` 发出去，
+#: 两者不能撞。同样走被动回复（带 ``msg_id``），**不消耗主动消息配额**。
+_NOTIFY_MSG_SEQ = 4
 
 
 def _session_key(message: GroupMessage) -> str:
@@ -177,7 +184,8 @@ class MyClient(botpy.Client):
                 # ``rich=True`` 允许把结果渲染成图片：判定细节是 5 列表格，
                 # 靠空格对齐在 QQ 的比例字体下**必然错位**，出图才看得清。
                 reply = await reply_text(
-                    message.content, session_key=_session_key(message), rich=True)
+                    message.content, session_key=_session_key(message), rich=True,
+                    notify=lambda text: self._notify(message, text))
 
                 if isinstance(reply, RichReply):
                     await self._send_rich(message, reply)
@@ -187,6 +195,28 @@ class MyClient(botpy.Client):
             except Exception as e:
                 _log.error(f"处理消息失败：{e}")
                 await self._reply_error(message, e)
+
+    async def _notify(self, message: GroupMessage, text: str) -> None:
+        """任务**进行中**先发一条（目前只有 ``#上传`` 的预计等待时长）。
+
+        为什么要这条通路：``#上传`` 真跑约 80 秒（60s 模拟游玩 + 16 次请求的
+        节流），而 ``reply_text`` 是 ``await`` 到底才返回的 —— 没有它，用户
+        在这 80 秒里收不到任何东西，只能干等（2026-09-27 用户要求补上）。
+
+        ⚠️ **必须带 ``msg_id``** —— 不带就成了主动消息，要消耗群配额；
+        这是**被动回复**，不花配额。``msg_seq`` 用 :data:`_NOTIFY_MSG_SEQ`（4）：
+        1 留给最终结果、2 是错误提示、3 是发图降级，四个互不相同。
+
+        本方法**刻意不抛异常**（调用方 `maimai_upload.handle_upload` 另有兜底）——
+        预告发不出去只是少一句话，不该让整次上传失败。
+        """
+        await self.api.post_group_message(
+            group_openid=message.group_openid,
+            msg_id=message.id,
+            msg_seq=_NOTIFY_MSG_SEQ,
+            msg_type=0,
+            content=text,
+        )
 
     async def _reply_error(self, message: GroupMessage, error: Exception) -> None:
         """把异常回给用户。
