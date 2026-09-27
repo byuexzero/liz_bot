@@ -57,6 +57,14 @@ env/
 # 等同账号密码。模板见 .env.example。
 .env
 
+# ⚠️ `.env` 的**备份**同样含完整凭据 —— 上面那条 `.env` 只匹配这个确切文件名，
+# 盖不住 `.env.bak.1790509893`（2026-09-27 实测确认未覆盖）。
+# 部署脚本每次改配置都会留一份 `.env.bak.<时间戳>`，只要它出现在**本地**
+# 工作区，一次 `git add -A` 就把全部凭据推进 public 仓库了。
+# 两种常见命名都收：`.env.bak.123` 与 `.env.123.bak`。
+.env.bak.*
+.env.*.bak
+
 # QQ 机器人配置。含真实 appid / secret，泄露即可冒用机器人身份。
 #
 # 配置已改为优先读环境变量（QQ_BOT_APPID / QQ_BOT_SECRET，见 liz_bot/config.py），
