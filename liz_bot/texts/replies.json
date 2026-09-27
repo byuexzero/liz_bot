@@ -32,7 +32,7 @@
     "upload_range": "{field} 这个数 Liz 收不了：{value}",
     "upload_no_utage": "宴谱的碎片 Liz 收不了～ 这个传不上去哦",
     "upload_need_field": "还差 {count} 个字段（{fields}）～\n{usage}",
-    "upload_intro": "Liz对7sRef的改变需要些时间，\n大概{time}就好～",
+    "upload_intro": "Liz对7sRef的改变需要些时间，\n大概 {time}就好～",
     "upload_busy": "已经有一块碎片在堆了，等它堆完～",
     "upload_cooldown": "刚堆完一块，歇 {seconds} 秒再来～\n连着送碎片，塔会不认的",
     "upload_cooldown_hint": "（{seconds} 秒后能再送一块）",
