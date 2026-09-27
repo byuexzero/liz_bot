@@ -15,9 +15,9 @@
 注：``reply_text`` 是 bot 外壳的唯一入口（识别 ``/`` 与 ``#`` 两种前缀），
 这里一并转出。
 
-注：``#`` 前缀的**舞萌命名空间**已建立（``parse_maimai_command`` /
-``is_maimai_command`` / ``handle_maimai_command``），但**实现尚未接入** ——
-所有 ``#`` 指令统一回复「未解析的指令」。接入点见
+注：``#`` 前缀的**舞萌命名空间**已接入 ``#上传``（``#上传 <二维码>`` 把一份
+成绩传到机台，成绩可以来自同一会话的 ``/估分`` 缓存，也可以当场给字段）。
+表里没有的 ``#`` 指令仍统一回复「未解析的指令」——加指令要动的地方见
 ``command_router.handle_maimai_command`` 的 docstring。
 
 注：``qr_reply``（扫码查询，对舞萌服务端发包）已**暂时移除**。
@@ -80,7 +80,7 @@ __all__ = [
     "Command",
     # 多轮补参（见 liz_bot/pending.py）
     "pending_store",
-    # 舞萌命名空间（`#` 前缀）—— 实现尚未接入，统一回「未解析的指令」
+    # 舞萌命名空间（`#` 前缀）—— 已接入 #上传，其余回「未解析的指令」
     "parse_maimai_command",
     "is_maimai_command",
     "handle_maimai_command",

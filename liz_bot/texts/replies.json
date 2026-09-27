@@ -19,7 +19,36 @@
     "retry_params_noparam": "{error}\n重新发一次就好～"
   },
   "maimai": {
-    "unparsed": "未解析的指令"
+    "unparsed": "未解析的指令",
+    "sync_names": ["无", "FS", "FS+", "FDX", "FDX+", "同步游玩"],
+    "bad_params": "参数个数不对～ 用法：{usage}",
+    "upload_usage": "#上传 <二维码> <歌曲id> <难度> <达成率>\n      [dx分] [combo] [sync] [maxCombo]\n只给二维码 → 用本会话最近一次 /估分",
+    "upload_usage_fields": "字段：<歌曲id> <难度> <达成率>\n      [dx分] [combo] [sync] [maxCombo]\n达成率写 100.8750 这样的小数即可",
+    "upload_need_qr": "第一个参数要放二维码（SGWCMAID 开头那串）～\n{usage}",
+    "upload_no_cache": "没有可用的 /估分 缓存～ 先 /估分 出一份，或者直接给字段：\n{usage}",
+    "upload_bad_field": "{field} 看不懂：{value}",
+    "upload_bad_level": "难度要填 0-4 或 10（宴谱），收到 {value}",
+    "upload_range": "{field} 超出范围（{low}-{high}）：{value}",
+    "upload_need_field": "还差 {count} 个字段（{fields}）～\n{usage}",
+    "upload_busy": "已经有一次上传在跑了，等它完～",
+    "upload_cooldown": "刚传完，歇 {seconds} 秒再传～\n一次约 16 次请求，别连着刷（服务端按请求量封禁）",
+    "upload_cooldown_hint": "（{seconds} 秒后可再传）",
+    "upload_no_toolchain": "上传功能不可用：本机没有 maimai 工具链（它不随仓库分发）",
+    "upload_dry": "（干跑：没联网，成绩没有真的传出去）",
+    "upload_title": "【传分】{title} {difficulty} {level}",
+    "upload_title_plain": "【传分】{difficulty} · 曲库没有这首",
+    "upload_fields": "id {music_id} · 达成 {achievement} · DX {dx}",
+    "upload_state": "combo {combo} · sync {sync} · 最大连击 {max_combo}",
+    "upload_source_cache": "来源：/估分 缓存",
+    "upload_source_params": "来源：你给的字段",
+    "upload_note_filled": "判定明细：曲库补全 {count} note",
+    "upload_note_derived": "推算字段：{fields}",
+    "upload_note_missing": "⚠️ 判定明细补不出来\n全 0 的 playlog 服务端可能直接丢弃",
+    "upload_ok": "✅ 已上传（{stage}）· 接口 {count} 次",
+    "upload_fail": "❌ 没成功：{stage}",
+    "upload_landed": "落库确认：playCount {before} → {after}",
+    "upload_not_landed": "⚠️ 没落库：playCount {before} → {after}（returnCode=1 也不代表写入成功）",
+    "upload_no_readback": "⚠️ 回读失败，无法确认是否落库"
   },
   "judge": {
     "difficulties": ["Basic", "Advanced", "Expert", "Master", "Re:Master"],
@@ -79,7 +108,7 @@
     "help_alias": "（别名：{aliases}）",
     "help_usage": "用法",
     "help_desc": "说明",
-    "help_maimai": "舞萌相关指令用 # 开头（如 #b50），目前尚未接入，会统一回复「未解析的指令」。",
+    "help_maimai": "舞萌指令用 # 开头：#上传 <二维码> 传分（其余回「未解析的指令」）。",
     "greeting": "你好呀！我是Liz～"
   },
   "alias": {

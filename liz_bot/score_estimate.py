@@ -427,8 +427,21 @@ def star_borders(total_notes: int) -> tuple[list[int], int]:
 
 
 def stars_of(dx: int, borders: list[int]) -> int:
-    """DX 分对应的星级（满足 ``dx ≥ border[j]`` 的最大 j）。"""
-    return max(j for j in range(len(borders)) if dx >= borders[j])
+    """DX 分对应的星级（满足 ``dx ≥ border[j]`` 的最大 j）。
+
+    ⚠️ ``dx`` 低于 1★ 门槛时返回 **0**，不是报错。0★ 是一档**真实星级**
+    （DX 全丢），不是「无解」—— :data:`STAR_ACHIEVE` 里 ``0`` 那一档就是它。
+
+    这里原先是裸 ``max(...)``，``dx == 0`` 会抛
+    ``ValueError: max() iterable argument is empty``（2026-09-27 发现）：
+    ``borders[0]`` 恒为 1，所以只要解出来的分布**一颗 CP/P 都没有**就中招。
+    触发它不需要什么刁钻输入 —— ``/估分 143 紫 0.02`` 这种「目标极低」的正常
+    提问就会走到（目标越低，最优解越接近全 Miss）。
+    """
+    for j in range(len(borders) - 1, -1, -1):
+        if dx >= borders[j]:
+            return j
+    return 0
 
 
 def star_span(borders: list[int], full: int, star: int) -> tuple[int, int]:
@@ -1582,8 +1595,8 @@ def estimate_reply(
 ) -> str:
     """``/估分 <歌曲id> <难度> <百分比> [dx星级] [combo等级]`` 的回复。
 
-    成功时把结果**存进一轮缓存**（见 :data:`CACHE`）—— 目前只存不取，
-    留着接口等产品决定下一轮拿它做什么。
+    成功时把结果**存进一轮缓存**（见 :data:`CACHE`）—— ``#上传`` 不带成绩
+    字段时就取它当要传的成绩（见 ``liz_bot/maimai_upload.score_from_cache``）。
 
     :param stars: 省略时**不约束 DX** —— 先按自然落点求出星级，再取那一档的
         推荐段（见 :func:`dx_pick_band`）；写 ``dx理论`` 则要求 DX 满分。
@@ -1653,9 +1666,12 @@ DEFAULT_CAPACITY = 500
 class EstimateCache:
     """按会话键缓存最近一次估分结果。**线程安全**。
 
-    目前**只存不取** —— 产品上还没决定下一轮拿它做什么（改参数重算？
-    导出 JSON？），所以先把接口留在这里，行为保持为空。
-    取用请调 :meth:`get`；要消费就调 :meth:`take`（取走并删除）。
+    2026-09-27 起有了第一个消费者：``#上传`` 不带成绩字段时读它取本次要传的
+    成绩（见 ``liz_bot/maimai_upload.score_from_cache``）。所以 ``put`` 里那句
+    「留着接口等产品决定」已经落地，别再当成空转。
+
+    消费用 :meth:`get`（**不删** —— 同一份估分可以连传几首不同难度，也可以
+    传完再看一眼结果）；要「取走即作废」的语义才用 :meth:`take`。
     """
 
     def __init__(self, ttl: float = DEFAULT_TTL, capacity: int = DEFAULT_CAPACITY):

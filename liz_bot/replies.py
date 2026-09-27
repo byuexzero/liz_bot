@@ -100,9 +100,48 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "router.retry_params": (str, ("error", "params")),
     "router.retry_params_noparam": (str, ("error",)),
     # ---- 舞萌命名空间（`#` 前缀）----
-    # 实现尚未接入，所有 `#` 指令统一回这一句
-    # （见 command_router.handle_maimai_command）
+    # 表里认不出的 `#` 指令统一回这一句（见 command_router.handle_maimai_command）
     "maimai.unparsed": (str, ()),
+    # 参数个数不对（见 command_router.MAIMAI_COMMANDS 的 min/max_params）。
+    # ⚠️ 与 router.bad_params 分开两份：那边报的是 `/指令 <参数>` 的用法，
+    # 这边报的是 `#上传 <二维码> …`，混用会把用户引到错误的写法上。
+    "maimai.bad_params": (str, ("usage",)),
+    # 同步状态显示名，下标即 PlaySyncFlagID（0=无 … 4=FDX+，5=同步游玩）。
+    # ⚠️ 顺序必须与 maimai.typings.PlaySyncFlagID 一致，别重排。
+    "maimai.sync_names": (list, ()),
+    # ---- 传分（`#上传`，见 liz_bot/maimai_upload.py）----
+    # {usage} 一律是 upload_usage / upload_usage_fields 渲染后的完整用法。
+    "maimai.upload_usage": (str, ()),
+    "maimai.upload_usage_fields": (str, ()),
+    "maimai.upload_need_qr": (str, ("usage",)),
+    "maimai.upload_no_cache": (str, ("usage",)),
+    "maimai.upload_bad_field": (str, ("field", "value")),
+    "maimai.upload_bad_level": (str, ("value",)),
+    "maimai.upload_range": (str, ("field", "value", "low", "high")),
+    "maimai.upload_need_field": (str, ("count", "fields", "usage")),
+    "maimai.upload_busy": (str, ()),
+    "maimai.upload_cooldown": (str, ("seconds",)),
+    "maimai.upload_cooldown_hint": (str, ("seconds",)),
+    "maimai.upload_no_toolchain": (str, ()),
+    "maimai.upload_dry": (str, ()),
+    "maimai.upload_title": (str, ("title", "difficulty", "level")),
+    "maimai.upload_title_plain": (str, ("difficulty",)),
+    # 成绩摘要**拆两行**：挤成一行是 45 格，会被折在「com」和「bo」中间
+    # （见 maimai_upload.render 的说明）。id 放在第二行**开头** ——
+    # 曲名长了会把标题那行折掉，id 放末尾就可能被折成「id 14」+「3」。
+    "maimai.upload_fields": (str, ("music_id", "achievement", "dx")),
+    "maimai.upload_state": (str, ("combo", "sync", "max_combo")),
+    "maimai.upload_source_cache": (str, ()),
+    "maimai.upload_source_params": (str, ()),
+    "maimai.upload_note_filled": (str, ("count",)),
+    # 补明细时**顺带推算**了哪些字段（用户没给的那些），不静默补
+    "maimai.upload_note_derived": (str, ("fields",)),
+    "maimai.upload_note_missing": (str, ()),
+    "maimai.upload_ok": (str, ("count", "stage")),
+    "maimai.upload_fail": (str, ("stage",)),
+    "maimai.upload_landed": (str, ("before", "after")),
+    "maimai.upload_not_landed": (str, ("before", "after")),
+    "maimai.upload_no_readback": (str, ()),
     # ---- 谱面判定细节（/songdata，见 liz_bot/judge_detail.py）----
     # 难度显示名，下标即难度下标（0=Basic … 4=Re:Master）。
     # ⚠️ 顺序必须与曲库 charts/level/ds 的下标一致，别重排。

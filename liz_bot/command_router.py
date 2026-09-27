@@ -6,8 +6,13 @@
 前缀               去向
 =================  ============================================================
 ``/``             本机指令（查歌 / 随机数 / 帮助……），见 :data:`COMMANDS`
-``#``             舞萌命名空间 —— **实现尚未接入**，统一回复「未解析的指令」
+``#``             舞萌命名空间，见 :data:`MAIMAI_COMMANDS`；表里没有的统一
+                  回复「未解析的指令」
 =================  ============================================================
+
+``#`` 目前只接了 ``#上传``（把一份成绩传到机台，见
+:mod:`liz_bot.maimai_upload`）。它依赖的 maimai 服务端工具链**不随仓库分发**，
+所以那一步是**延迟加载**的：模块不在时回一句「上传功能不可用」，机器人照常起。
 
 :func:`reply_text` 是 **bot 外壳的唯一入口**：识别前缀 → 解析 → 分发，把一条
 消息变成一段回复文本。``qqgroupbot`` 只负责收发，不碰解析逻辑。
@@ -63,6 +68,11 @@
 注：``/qr``（扫码查询）已**暂时移除**——它是对舞萌服务端的发包功能。
 它依赖的服务端 API 工具链**不随仓库分发**（见 ``.gitignore``）——
 那是一个功能完整的上传工具，公开分发不合适；需要时从本地获取。
+
+``#上传`` 走的是**同一份**工具链，只是换了个入口（:func:`_upload_module` 延迟
+加载 :mod:`liz_bot.maimai_upload`）。所以容器里通常没有它，``#上传`` 会回
+「上传功能不可用」；本地跑机器人时才有。**不要**为了让它能用而把 ``maimai/``
+加回仓库。
 
 注：``/bm``、``/别名查歌``、``/查询别名``、``/cbm`` 现走**柚子（yuzuchan）**
 别名库，数据见 ``liz_bot/yuzuchan_aliases/aliases.json``（由
@@ -164,6 +174,31 @@ COMMANDS: tuple[Command, ...] = (
 )
 
 
+#: 舞萌指令表（``#`` 命名空间）。**结构与 :data:`COMMANDS` 完全一致**，
+#: 但走另一条分发路径（见 :func:`handle_maimai_command`），也不进 ``/help``
+#: —— 那张表只列本机指令，尾注另外说明 ``#`` 的存在。
+#:
+#: ``#上传`` 的参数个数上限是 **8**：``二维码 + 7 个成绩字段``
+#: （见 ``liz_bot.maimai_upload.SCORE_FIELDS``）。二维码本身不带空格，
+#: 所以这里可以设上限，不必像 ``/songdata`` 那样放开。
+MAIMAI_COMMANDS: tuple[Command, ...] = (
+    # ``listed=False``：``/help`` 的那张表只列本机指令（:func:`help_rows` 遍历的是
+    # :data:`COMMANDS`），舞萌指令在尾注里用一句话带过。这里显式写出来，
+    # 免得后人以为「忘了列进去」。
+    Command("upload", ("上传", "upload", "传分"), 1, 8, listed=False),
+)
+
+#: ``key`` → 该指令的**用法文案键**。与 :data:`MAIMAI_COMMANDS` 一一对应
+#: （import 时校验）。
+#:
+#: 为什么不像 ``/`` 指令那样直接用 ``commands.<key>``：``commands.*`` 是
+#: **``/help`` 列表的整行文案**（``/估分 <…> — 说明``），而舞萌指令不进那张表，
+#: 它的用法是 ``#上传 <二维码> …`` —— 混用会把用户引到错误的写法上。
+_MAIMAI_USAGE: dict[str, str] = {
+    "upload": "maimai.upload_usage",
+}
+
+
 def _build_index() -> dict[str, Command]:
     """把 ``COMMANDS`` 摊平成「**小写**名字/别名 → 指令」的字典。
 
@@ -219,6 +254,39 @@ def _lookup(cmd_name) -> Command | None:
     return _BY_NAME.get(key)
 
 
+def _build_maimai_index() -> dict[str, Command]:
+    """把 :data:`MAIMAI_COMMANDS` 摊平成「**小写**名字/别名 → 指令」的字典。
+
+    与 :func:`_build_index` 同一套规则（小写化、判重），只是表不同 ——
+    ``#`` 与本机指令**各查各的表**，同名互不干扰（``#上传`` 与将来的 ``/上传``
+    可以并存）。
+    """
+    index: dict[str, Command] = {}
+    for entry in MAIMAI_COMMANDS:
+        for name in entry.names:
+            key = name.lower()
+            if key in index:
+                raise RuntimeError(
+                    f"舞萌指令名重复：{name!r} 同时属于 "
+                    f"{index[key].key!r} 与 {entry.key!r}"
+                )
+            index[key] = entry
+    return index
+
+
+_MAIMAI_BY_NAME: dict[str, Command] = _build_maimai_index()
+
+
+def _lookup_maimai(cmd_name) -> Command | None:
+    """按指令名（规范名或别名）查舞萌指令表。
+
+    与 :func:`_lookup` 同一套规则（大小写不敏感、非字符串按查不到处理），
+    只是查的是另一张表 —— ``#`` 与 ``/`` 各查各的，同名互不干扰。
+    """
+    key = cmd_name.lower() if isinstance(cmd_name, str) else ""
+    return _MAIMAI_BY_NAME.get(key)
+
+
 # ---------------------------------------------------------------------------
 # 解析
 # ---------------------------------------------------------------------------
@@ -226,7 +294,7 @@ def _lookup(cmd_name) -> Command | None:
 #: 本机指令前缀（查歌 / 随机数 / 帮助……）。
 PREFIX_NORMAL = "/"
 
-#: 舞萌指令前缀。**实现尚未接入** —— 见 :func:`handle_maimai_command`。
+#: 舞萌指令前缀。见 :data:`MAIMAI_COMMANDS` 与 :func:`handle_maimai_command`。
 PREFIX_MAIMAI = "#"
 
 #: 指令正文：``指令名`` + 可选参数。两种前缀共用同一套语法。
@@ -279,12 +347,8 @@ async def parse_maimai_command(message_content: str):
     """解析 ``#`` 开头的舞萌指令 → ``(指令名, [参数...], True)``。
 
     语法与 :func:`parse_command` **完全一致**（共用同一个 ``_BODY``），只是前缀
-    从 ``/`` 换成 ``#``：``#b50``、``#上传 123``。因此 ``# song 8``（``#`` 后带
-    空格）同样解析失败 —— 两种前缀的规则保持一致，不让人猜。
-
-    ⚠️ 舞萌指令**实现尚未接入**（见 :func:`handle_maimai_command`）。
-    这里先把解析写出来，是为了让「加一条舞萌指令」和「加一条本机指令」的路径
-    一致：将来只要补一张表 + 一个处理函数，:func:`reply_text` 的分发不必再动。
+    从 ``/`` 换成 ``#``：``#上传 SGWCMAID…``、``#b50``。因此 ``# song 8``（``#``
+    后带空格）同样解析失败 —— 两种前缀的规则保持一致，不让人猜。
 
     :return: ``(指令名, 参数列表, True)``；不是 ``#`` 指令格式则
         ``(None, None, False)``
@@ -305,9 +369,9 @@ async def parse_maimai_command(message_content: str):
 def is_maimai_command(message_content: str) -> bool:
     """消息是否落在 ``#`` 命名空间里。
 
-    判据只看**前缀**，不要求能解析成功：舞萌指令当前一律回复「未解析的指令」，
-    所以 ``#`` 后面写了什么（哪怕格式不对）都该得到同一句话，而不是掉进
-    「未知指令」让人误以为 ``#`` 这个前缀不被认识。
+    判据只看**前缀**，不要求能解析成功：``#`` 命名空间里认不得的指令一律回
+    「未解析的指令」，所以 ``#`` 后面写了什么（哪怕格式不对）都该得到同一句话，
+    而不是掉进「未知指令」让人误以为 ``#`` 这个前缀不被认识。
     """
     return message_content.strip().startswith(PREFIX_MAIMAI)
 
@@ -813,6 +877,83 @@ if set(_HANDLERS) != {entry.key for entry in COMMANDS}:
 
 
 # ---------------------------------------------------------------------------
+# 舞萌命名空间（`#` 前缀）的处理函数
+# ---------------------------------------------------------------------------
+
+#: 上传桥模块的缓存。**只在成功时缓存** —— 拿不到（镜像里没有工具链）时
+#: 每次 ``#上传`` 重新探一次：代价很小，却省掉了「测试里塞进来之后取不到」
+#: 这类顺序坑。
+_UPLOAD_MODULE: object | None = None
+
+
+def _upload_module():
+    """延迟加载 :mod:`liz_bot.maimai_upload`；拿不到返回 ``None``。
+
+    **为什么必须延迟**：那个模块在模块级 ``import maimai``，而 ``maimai/``
+    **不随仓库分发**（``.gitignore`` 与 ``.dockerignore`` 都排除了它）——
+    在模块级 import 它，容器里的机器人会直接起不来。
+
+    ⚠️ **不能只接 ``ImportError``**：``maimai.config`` 在 import 期就会读
+    ``.env`` 并对必填项抛 ``RuntimeError``，而 ``.env`` 也在 ``.dockerignore``
+    里 —— 镜像里缺工具链时更常见的恰恰是那个 ``RuntimeError``。
+    所以这里按「探测能力」处理：接 ``Exception``、把原因记进日志、返回 ``None``。
+    """
+    global _UPLOAD_MODULE
+    if _UPLOAD_MODULE is not None:
+        return _UPLOAD_MODULE
+    try:
+        from liz_bot import maimai_upload as module
+    except Exception as exc:  # noqa: BLE001 —— 见 docstring
+        _log.warning("传分：上传桥不可用（%s: %s）", type(exc).__name__, exc)
+        return None
+    _UPLOAD_MODULE = module
+    return module
+
+
+async def _m_upload(cmd_params, session_key):
+    """``#上传 <二维码> [<成绩字段…>]`` —— 传一份成绩上去。
+
+    业务全在 :mod:`liz_bot.maimai_upload` 里（成绩来源、判定明细补全、探针、
+    渲染），这里只判断「工具链在不在」—— 因为延迟加载就发生在本模块。
+    """
+    module = _upload_module()
+    if module is None:
+        return replies.text("maimai.upload_no_toolchain")
+    return await module.handle_upload(cmd_params, session_key)
+
+
+#: ``key`` → 处理函数。签名统一 ``(参数列表, 会话键) -> 回复文本`` ——
+#: 比 ``/`` 指令少两个参数（没有 ``miss`` 哨兵、没有 ``rich``），因为舞萌指令
+#: 目前只回文本。
+_MAIMAI_HANDLERS: dict[str, Callable] = {
+    "upload": _m_upload,
+}
+
+# 与 COMMANDS/_HANDLERS 同样的理由：漏一个就是「指令能解析但没人处理」，
+# 会在群里表现成一句看不懂的 KeyError。
+if set(_MAIMAI_HANDLERS) != {entry.key for entry in MAIMAI_COMMANDS}:
+    _m_only_table = sorted({e.key for e in MAIMAI_COMMANDS} - set(_MAIMAI_HANDLERS))
+    _m_only_handler = sorted(set(_MAIMAI_HANDLERS) - {e.key for e in MAIMAI_COMMANDS})
+    raise RuntimeError(
+        "MAIMAI_COMMANDS 与 _MAIMAI_HANDLERS 不匹配："
+        f"只在表里={_m_only_table}，只在处理函数里={_m_only_handler}"
+    )
+
+# 同理：没有用法文案的指令，一旦参数给错就只能回一句光秃秃的「参数个数不对」，
+# 用户不知道该怎么改。这里查的是 **replies._SCHEMA**（纯数据，不读盘）——
+# 用 replies.get() 会在 import 期读文件，把「文案文件坏了」提前成 import 失败，
+# 而那种错应该由 run.py 的 replies.preload() 报，报得更清楚。
+_missing_usage = [k for k in _MAIMAI_USAGE.values() if k not in replies._SCHEMA]
+if set(_MAIMAI_USAGE) != {entry.key for entry in MAIMAI_COMMANDS} or _missing_usage:
+    raise RuntimeError(
+        "MAIMAI_COMMANDS 与 _MAIMAI_USAGE 不匹配："
+        f"缺用法键的指令={sorted({e.key for e in MAIMAI_COMMANDS} - set(_MAIMAI_USAGE))}，"
+        f"多出来的={sorted(set(_MAIMAI_USAGE) - {e.key for e in MAIMAI_COMMANDS})}，"
+        f"没在 replies._SCHEMA 登记={_missing_usage}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # 帮助
 # ---------------------------------------------------------------------------
 
@@ -1178,31 +1319,52 @@ def _render_rich(entry: Command, cmd_params: list, fallback: str) -> "RichReply 
     return RichReply(png=png, filename=filename, fallback=fallback)
 
 
-async def handle_maimai_command(cmd_name, cmd_params) -> str:
-    """舞萌指令的统一入口 —— **当前一律回复「未解析的指令」**。
+async def handle_maimai_command(cmd_name, cmd_params, *, session_key=None) -> str:
+    """舞萌指令（``#`` 前缀）的统一入口 —— 查表 → 校验个数 → 分发。
+
+    ==================  ====================================================
+    情况                回复
+    ==================  ====================================================
+    表里认得            交给 :data:`_MAIMAI_HANDLERS` 里对应的处理函数
+    表里不认得          ``maimai.unparsed``（固定一句「未解析的指令」）
+    参数个数不对        ``maimai.bad_params``（带该指令的完整用法）
+    ==================  ====================================================
+
+    **不认得的指令只回一句话，不提示「你是不是想打 XXX」** —— 舞萌那边的指令
+    名字（``b50`` / ``b40`` / ``ap`` …）将来会一批批接进来，现在拿模糊匹配去猜，
+    猜错比不猜更糟（用户会以为那个功能已经有了）。
 
     :param cmd_name: :func:`parse_maimai_command` 解出的指令名。可能是 ``None``
-        （``#`` 后面不是合法指令格式）。**现在用不到**，保留参数是为了将来
-        接入实现时函数签名不用变。
-    :param cmd_params: 同上。
-    :return: ``replies.json`` 的 ``maimai.unparsed`` 文案（固定一句）
+        （``#`` 后面不是合法指令格式）—— 按「表里不认得」处理。
+    :param cmd_params: 参数列表（``parse_maimai_command`` 切好的）。``None`` 也接受。
+    :param session_key: 会话标识。**``#上传`` 靠它读 ``/估分`` 的会话缓存**
+        （见 :func:`_m_upload`）；``None`` / 空串时「没缓存」那条分支照走，
+        只是永远取不到缓存。
+    :return: 回复文本（本命名空间目前只产文本，没有图片版）
 
-    接入真实实现时改这里：按 ``cmd_name`` 查一张 ``MAIMAI_COMMANDS`` 表，
-    分发到本地保留的 maimai 服务端 API 工具链。届时记得沿用本模块已有的约定：
+    加一条舞萌指令要动**四个地方**，少一个都有守卫拦下：
 
-    * 参数个数校验复用 :class:`Command` 的 ``min_params`` / ``max_params``；
-    * 文案一律进 ``replies.json``，别在这个函数里硬编码；
-    * ``COMMANDS`` ↔ 处理函数的键要在 import 时校验一一对应（照抄上面的做法）。
+    1. :data:`MAIMAI_COMMANDS`（名字 / 参数个数）
+    2. :data:`_MAIMAI_USAGE`（用法文案键）
+    3. :data:`_MAIMAI_HANDLERS`（处理函数）
+    4. ``replies.json`` + ``replies.py`` 的 ``_SCHEMA``（文案本体）
 
-    .. note::
-
-       该工具链**不随仓库分发**（见 ``.gitignore``）—— 它是一个功能完整的
-       上传工具，公开分发不合适。接入时从本地获取，别把它加回仓库。
-
-       原先这里指向一份恢复说明 ``liz_bot/_已移除功能_舞萌发包.md``，
-       该文件已随文档整理一并删除。
+    前三条的键在 import 时互相校验，第四条由 ``test_command_table.py`` 守着。
     """
-    return replies.text("maimai.unparsed")
+    entry = _lookup_maimai(cmd_name)
+    if entry is None:
+        return replies.text("maimai.unparsed")
+
+    params = list(cmd_params or ())
+    count = len(params)
+    if count < entry.min_params or (
+        entry.max_params is not None and count > entry.max_params
+    ):
+        return replies.text(
+            "maimai.bad_params", usage=replies.text(_MAIMAI_USAGE[entry.key])
+        )
+
+    return await _MAIMAI_HANDLERS[entry.key](params, session_key)
 
 
 # ---------------------------------------------------------------------------
@@ -1489,14 +1651,18 @@ async def reply_text(
         于是它们拿到的永远是 ``str``，行为与加这个参数之前完全一致。
     :return: 回复文本；``rich=True`` 且能出图时是 :class:`RichReply`
     """
-    # ``#`` 命名空间当前一律回「未解析」，所以哪怕格式不合法也走这里，
-    # 不要掉进 bot.not_command —— 否则「# 上传」会被说成「未知指令」，
-    # 让人以为 ``#`` 不被认识。
+    # ``#`` 命名空间：认得的走实现，认不得的统一回「未解析的指令」。
+    # 哪怕格式不合法（``# 上传``）也走这里，不要掉进 bot.not_command ——
+    # 否则会被说成「未知指令」，让人以为 ``#`` 不被认识。
     if is_maimai_command(message_content):
         # 用户明确表达了「我要干别的」→ 取消等待
         _PENDING.drop(session_key)
         cmd_name, cmd_params, _parsed = await parse_maimai_command(message_content)
-        return await handle_maimai_command(cmd_name, cmd_params)
+        # ⚠️ ``session_key`` **必须传下去** —— ``#上传`` 要靠它读 ``/估分``
+        # 留在同一会话里的缓存（见 liz_bot/maimai_upload.handle_upload）。
+        return await handle_maimai_command(
+            cmd_name, cmd_params, session_key=session_key
+        )
 
     cmd_name, cmd_params, is_valid = await parse_command(message_content)
 
