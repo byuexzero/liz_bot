@@ -39,6 +39,48 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# 本地 .env（容器里不存在，直接跳过）
+# ---------------------------------------------------------------------------
+#: 项目根目录（``liz_bot/`` 的上一级）。
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+#: 本地凭据文件。**已被 .gitignore 排除**，绝不要提交。
+_ENV_PATH = _PROJECT_ROOT / ".env"
+
+
+def _load_dotenv(path: Path) -> None:
+    """把 ``path`` 里的 ``KEY=VALUE`` 灌进 ``os.environ``。
+
+    为什么需要它：``.env`` 是项目里既有的凭据存放处（``maimai/`` 一直这么用），
+    本地跑 ``run.py`` 时不该要求用户先手工 ``export`` 一遍。
+
+    ⚠️ **不覆盖已有变量**（用 ``setdefault``）—— 优先级仍然是
+    「真实环境变量 > .env」，这样容器里由 ``env_file`` 注入的同名变量永远赢。
+    ⚠️ 文件不存在时静默返回：容器里没有 ``.env``，凭据全靠环境变量。
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        # 允许 KEY="value" / KEY='value' 两种写法
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        os.environ.setdefault(key, value)
+
+
+_load_dotenv(_ENV_PATH)
+
 
 class ConfigError(RuntimeError):
     """配置缺失或不可用。"""

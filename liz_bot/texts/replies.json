@@ -131,6 +131,9 @@
     "not_command": "未知指令：“{content}”",
     "error": "处理失败：{error}..."
   },
+  "ai": {
+    "url_removed": "[链接已省略]"
+  },
   "commands": {
     "help": "/help — 查看指令列表",
     "hello": "/hello — 打个招呼",

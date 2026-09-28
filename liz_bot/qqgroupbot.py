@@ -8,7 +8,9 @@ import botpy
 from botpy import logging
 from botpy.message import GroupMessage
 
-from liz_bot import media_upload, replies
+from liz_bot import ai_chat, media_upload, replies
+# 注：``PREFIX_NORMAL`` / ``PREFIX_MAIMAI`` 现在只在 ``ai_chat.should_handle``
+# 里用到（触发判断收在那边，便于自检），本模块不再直接引。
 from liz_bot.command_router import RichReply, reply_text
 from liz_bot.config import BotConfig, load_bot_config
 from liz_bot.healthz import set_status as set_health_status
@@ -176,6 +178,29 @@ class MyClient(botpy.Client):
             # 参数丢掉（超时自会作废，见 liz_bot/pending.py）。
             await message.reply(content=random.choice(replies.get("bot.none_reply")))
         else:
+            # ---- 群聊 AI 分支（2026-09-28）----
+            # 范围：@ 机器人的群消息（本回调本身就是「群 @ 消息」事件）
+            # 且**不是指令**。触发判断收在 ``ai_chat.should_handle`` 里
+            # （前缀从 command_router 取常量、不硬编码），这样它可被自检覆盖 ——
+            # 见 _tools/test_ai_chat.py。
+            #
+            # ⚠️ 必须和指令路由**同进程同回调**：一个 AppID 只能有一条
+            #    WebSocket 连接，AI 不能另起进程（见 Qwen3.7Flash可行性调研.md §3.1）。
+            #
+            # ⚠️ 未配置 key（``LIZ_AI_API_KEY``）时 ``should_handle`` 为假，
+            #    整段跳过，行为与从前**完全一致**。
+            if ai_chat.should_handle(message.content):
+                answer = await ai_chat.reply(message.content)
+                if answer is not None:
+                    try:
+                        await message.reply(content=answer)
+                    except Exception:
+                        # 发不出去就只记日志 —— 不再回错误提示，
+                        # 否则一次失败会往群里连发两条消息
+                        _log.exception("AI 回复发送失败")
+                    return
+                # AI 不可用 / 调用失败 ⇒ 落到下面走原逻辑，行为与从前一致
+
             try:
                 # 前缀识别（`/` 本机指令 / `#` 舞萌命名空间）、解析、分发，
                 # 全部在 command_router.reply_text 里 —— 本类只负责收发、

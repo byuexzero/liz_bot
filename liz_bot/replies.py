@@ -268,6 +268,10 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "bot.none_reply": (list, ()),
     "bot.not_command": (str, ("content",)),
     "bot.error": (str, ("error",)),
+    # ---- 群聊 AI（见 liz_bot/ai_chat.py）----
+    # 模型输出里的 URL 会被替换成它 —— QQ 开放平台对含 URL 的消息**直接拒发**
+    # （错误码 40054010），而模型特别爱输出链接，所以过滤必须落在代码里。
+    "ai.url_removed": (str, ()),
     # ---- 指令表（/help 用）----
     # 每个键对应 command_router.COMMANDS 里的一条指令，值是**整行** help 文案，
     # 形如 ``/song <歌名或别名> — 按歌名或别名查歌``。
