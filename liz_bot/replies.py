@@ -298,6 +298,10 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # 回复**发不出去**（QQ 平台拒发 / 输出侧审核）时补发它。
     # 见 qqgroupbot._send_safe —— 原来只记日志，群里一个字都没有。
     "ai.reply_rejected": (str, ()),
+    # **本条消息太长**（丢历史后仍超 MAX_PROMPT_CHARS）时回它。
+    # 同属「不能沉默」那一类：收小 MAX_PROMPT_CHARS 之后，「贴长文」更容易撞上限，
+    # 所以必须给一个出口，而不是让用户对着空气等。
+    "ai.reply_too_long": (str, ()),
     # ---- 指令表（/help 用）----
     # 每个键对应 command_router.COMMANDS 里的一条指令，值是**整行** help 文案，
     # 形如 ``/song <歌名或别名> — 按歌名或别名查歌``。

@@ -95,8 +95,12 @@ DEFAULT_MODEL = "qwen3.7-flash"
 #: 单次回复的最大输出 token。
 #:
 #: 群聊不需要长文；这个值同时是**成本闸门** —— 万一模型跑飞，单次最多也就
-#: 烧掉 ``400 × 0.8 / 1e6 ≈ 0.0003`` 元。
-MAX_TOKENS = 400
+#: 烧掉 ``320 × 0.8 / 1e6 ≈ 0.00026`` 元。
+#:
+#: ⚠️ 2026-09-29 从 400 降到 320：人设变长后要重新算总账（见
+#: :data:`DEFAULT_MAX_CALLS_PER_DAY` 的推导）。320 token ≈ 200 个汉字，
+#: 仍是人设要求的「十几个到三十来个字」的 6 倍以上 —— 不会截断正常回复。
+MAX_TOKENS = 320
 
 #: 采样温度。qwen 默认 1.0，这里略调高，**目的是打破句式坍缩**。
 #:
@@ -117,29 +121,40 @@ MAX_CONCURRENCY = 3
 
 _SEM = asyncio.Semaphore(MAX_CONCURRENCY)
 
-#: 单次请求的**输入**安全上限（字符）。
+#: 单次请求的**输入**上限（字符）。**它是成本公式里的那个变量。**
 #:
 #: 百炼是**阶梯计费**：单次输入一旦超过 32K token，**整单**单价涨 3 倍
-#: （¥0.2 → ¥0.6 / 百万）。10 轮窗口约 1K token，余量很大 ——
-#: 这个值只是「有人发了超长文」时的兜底（见 ``ai_context.HistoryStore``）。
+#: （¥0.2 → ¥0.6 / 百万）。这里的上限远低于 32K，防的是另一件事 ——
+#: **单次调用的绝对花费**（见 :data:`DEFAULT_MAX_CALLS_PER_DAY` 的推导）。
 #:
-#: 人设约 850 字 ≈ 600 token；窗口上限 4000 字符 ≈ 2K token。合计远低于 32K。
-MAX_PROMPT_CHARS = 20000
+#: ⚠️ 2026-09-29 从 20000 收到 9000。人设扩到 1789 字、窗口上限 5000 字之后，
+#: 9000 这个数把「人设 + 满窗口 + 一条 2K 字的长消息」刚好装下，
+#: 同时把单次最坏花费钉在 ¥0.0016 —— 这是 200 次/天 能守住 10 元的前提。
+#:
+#: ⚠️ 超限**不再静默**：先丢历史重试（多数情况够），仍超才回固定推托
+#: （见 :func:`reply`）。收小这个值会让「贴长文」更容易撞上限，所以必须给出口。
+MAX_PROMPT_CHARS = 9000
 
-#: 每日 AI 调用次数上限（全局）。**这是「月成本 ≤ 10 元」的保证**。
+#: 每日 AI 调用次数上限（全局）。**这是「月成本 ≤ 10 元」的保证。**
 #:
-#: 实测单次约 ¥0.0005（输入 ~1.5K token + 输出 ~250 token，均在 ≤32K 档）：
+#: 推导（2026-09-29 重算，人设扩长 + 窗口开大之后）：
 #:
-#: * 300 次/天 ⇒ **约 ¥4.5/月**
-#: * 650 次/天 ⇒ 约 ¥9.8/月（正好是用户给的 10 元上限）
+#: * 最坏单次输入 = :data:`MAX_PROMPT_CHARS` 9000 字 ÷ 1.30 字/token ≈ **6923 token**
+#:   （1.30 是实测比值：人设 1053 字时输入 817 token）
+#: * 最坏单次输出 = :data:`MAX_TOKENS` = 320 token
+#: * 最坏单次花费 = 6923×0.2e-6 + 320×0.8e-6 = **¥0.00164**
+#: * 200 次/天 × 30 天 × 0.00164 = **¥9.84/月** ✅
 #:
-#: 取 300 是留一倍余量。正常小群（每天几十条）根本碰不到 ——
-#: 它的作用只有一个：**有人刷屏或模型陷入循环时，把账单钉死**。
+#: ⚠️ 这是**最坏情况**（每条都贴满长文 + 模型每次都写满）。真实场景：
+#: 人设 1377 + 窗口约 600 + 本条 30 ≈ 2000 token，输出 ~15 token
+#: ⇒ 单次约 ¥0.00042 ⇒ 200 次/天 也只 **¥2.5/月**。
+#:
+#: ⚠️ 它的作用只有一个：**有人刷屏或模型陷入循环时，把账单钉死**。
 #: 可用 ``LIZ_AI_MAX_CALLS_PER_DAY`` 覆盖。
-DEFAULT_MAX_CALLS_PER_DAY = 300
+DEFAULT_MAX_CALLS_PER_DAY = 200
 
 #: 单个会话的每日上限。防止**一个人**把全局额度刷完，让别人当天没得用。
-DEFAULT_MAX_CALLS_PER_SESSION = 60
+DEFAULT_MAX_CALLS_PER_SESSION = 40
 
 
 def _int_env(name: str, default: int) -> int:
@@ -403,6 +418,11 @@ def _extract(data: dict) -> str:
     return (message.get("content") or "").strip()
 
 
+def _prompt_chars(messages: list[dict]) -> int:
+    """这次请求的输入总字符数（成本闸门看的就是它）。"""
+    return sum(len(m["content"]) for m in messages)
+
+
 def _build_messages(
     content: str, session_key: str | None, *, use_history: bool = True
 ) -> list[dict]:
@@ -523,9 +543,20 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
         return None
 
     messages = _build_messages(content, session_key)
-    if sum(len(m["content"]) for m in messages) > MAX_PROMPT_CHARS:
-        _log.warning("AI 输入超长（>%s 字符），本条消息静默降级", MAX_PROMPT_CHARS)
-        return None
+    if _prompt_chars(messages) > MAX_PROMPT_CHARS:
+        # 先丢历史 —— 多数「太长」是窗口顶上去的，「人设 + 本条」往往就装得下。
+        _log.warning(
+            "AI 输入超长（%s > %s 字符），丢掉历史后重试",
+            _prompt_chars(messages),
+            MAX_PROMPT_CHARS,
+        )
+        messages = _build_messages(content, session_key, use_history=False)
+
+    if _prompt_chars(messages) > MAX_PROMPT_CHARS:
+        # 连「人设 + 本条」都装不下 ⇒ 是**这条消息本身**太长。
+        # ⚠️ 不能返回 None：那又是一次「@ 了没反应」，和合规拦截是同一类毛病。
+        _log.warning("本条消息本身超长（%s 字符），回固定推托", len(content))
+        return replies.text("ai.reply_too_long")
 
     payload = {
         "model": settings.model,
