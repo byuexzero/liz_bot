@@ -13,8 +13,7 @@
     "unknown_command": "未知指令：{cmd_name}",
     "bad_params": "笨蛋参数不够啦～\n{usage}",
     "too_many_params": "笨蛋参数太多啦～\n{usage}",
-    "ask_params": "还差 {missing} 个参数（{params}）～ 直接发给我就好",
-    "ask_params_noparam": "还差 {missing} 个参数～ 直接发给我就好",
+    "ask_params": "还差 {missing} 个参数～ 直接发给我就好",
     "retry_params": "{error}\n重新发一次就好～ 需要：{params}",
     "retry_params_noparam": "{error}\n重新发一次就好～"
   },

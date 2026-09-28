@@ -86,13 +86,11 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "router.bad_params": (str, ("usage",)),
     "router.too_many_params": (str, ("usage",)),
     # 多轮补参：参数不够时的追问（见 liz_bot/pending.py）
-    # ⚠️ 刻意**不带** {usage} —— 追问只报「还差几个 + 还差哪几个参数」，
-    #    不带指令头（用户要求）。需要看完整用法的场景走 router.bad_params。
-    #    {params} 取自该指令 help 文案里的 <...> 占位符（见 command_router._param_names），
-    #    所以文案里的参数名只有一份，不会漂移。
-    "router.ask_params": (str, ("missing", "params")),
-    # help 文案里没写 <...> 占位符时的退化文案（正常不会用到，有测试守着）
-    "router.ask_params_noparam": (str, ("missing",)),
+    # ⚠️ 刻意**不带** {usage} —— 追问只报「还差几个」，不带指令头（用户要求）。
+    #    参数名也不再挤进这一行（2026-09-28 用户要求「缺少时也要发参数提示」）：
+    #    它们改由**参数树**承担，贴在下面（见 command_router._params_tree）。
+    #    挤在一行时实测 51 格，远超 39 格上限。
+    "router.ask_params": (str, ("missing",)),
     # 补参 / 消歧期间**执行失败**（值不对：查不到、难度写错、参数给多了）时的提示。
     # 见 command_router._retry_text —— 失败**不清状态**，让用户重发一次即可。
     # {error} 是原始的失败文案（可能多行，如 judge.no_chart 会列出可用难度），
