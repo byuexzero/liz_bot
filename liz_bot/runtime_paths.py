@@ -2,14 +2,15 @@
 
 为什么需要
 ----------
-机器人只有两处会在**运行时写入磁盘**：
+机器人会在**运行时写入磁盘**的地方如下（都在数据卷上）：
 
-===========  ==================  ================
-路径         写入方               内容
-===========  ==================  ================
-``ai_chat/``  ``qqgroup-ai-bot``  AI 会话历史
-``bot_log/``  ``qqgroupbot``      botpy 运行日志
-===========  ==================  ================
+====================================  ==================  ====================
+路径                                   写入方               内容
+====================================  ==================  ====================
+``ai_chat/``                           ``qqgroup-ai-bot``  AI 会话历史
+``ai_chat/affinity/``                  ``ai_chat``         每个会话一个好感度 txt
+``bot_log/``                           ``qqgroupbot``      botpy 运行日志
+====================================  ==================  ====================
 
 而 ``music_data.json`` / ``aliases.json`` / ``texts/replies.json`` 这些
 曲库、别名库与回复文本文件都是**只读**的，随镜像一起分发即可，
@@ -92,6 +93,16 @@ def _pick(volume_relative: str, repo_default: Path) -> str:
 #: AI 会话记录目录（仅 ``qqgroup-ai-bot.py`` 使用）。
 AI_CHAT_DIR = _pick("ai_chat", _HERE / "ai_chat")
 
+#: 好感度目录（见 :mod:`liz_bot.affinity`）—— **每会话一个 ``.txt``**。
+#:
+#: 为什么落在 :data:`AI_CHAT_DIR` **里面**而不是另起一个卷内目录：
+#: 两者是同一件事（「这个群里的聊天状态」），分开会让 ``deploy/data`` 下
+#: 出现两个平级目录、且要各自写一遍挂载与播种逻辑。放里面就自动跟着走。
+#:
+#: ⚠️ 它**必须可写、必须持久化**：好感度是跨会话的长期关系，
+#: 容器重建后清零等于把「认识你很久了」这件事抹掉。
+AFFINITY_DIR = os.path.join(AI_CHAT_DIR, "affinity")
+
 #: botpy 日志目录。
 LOG_DIR = _pick("bot_log", _REPO_ROOT / "bot_log")
 
@@ -107,6 +118,7 @@ def describe() -> list[str]:
     return [
         f"数据来源：{origin}",
         f"AI 会话：{AI_CHAT_DIR}",
+        f"好感度：{AFFINITY_DIR}",
         f"日志目录：{LOG_DIR}",
         f"曲库基线：{SONG_FILE_PATH}",
         f"别名基线：{ALIAS_FILE_PATH}",
@@ -130,8 +142,12 @@ def ensure_dirs() -> list[str]:
         except OSError as exc:
             notes.append(f"⚠ 数据卷挂载点创建失败：{DATA_ROOT}（{exc}）")
 
-    # 2. 两个可写目录
-    for label, path in (("AI 会话目录", AI_CHAT_DIR), ("日志目录", LOG_DIR)):
+    # 2. 三个可写目录
+    for label, path in (
+        ("AI 会话目录", AI_CHAT_DIR),
+        ("好感度目录", AFFINITY_DIR),
+        ("日志目录", LOG_DIR),
+    ):
         try:
             os.makedirs(path, exist_ok=True)
         except OSError as exc:

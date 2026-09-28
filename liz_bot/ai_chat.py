@@ -1,11 +1,15 @@
-"""群聊 AI 回复 —— Qwen3.7-Flash（最小可用版）。
+"""群聊 AI 回复 —— Qwen3.7-Flash。
 
-只做三件事：
+做五件事：
 
 1. **接一条消息、回一句话** —— 调用方（``qqgroupbot``）已经把范围限死在
    「群 @ 消息」上，所以这里不再判断触发条件。
-2. **调一次百炼** —— 走 OpenAI 兼容接口，用 ``aiohttp`` 直发。
-3. **强制 URL 过滤** —— QQ 开放平台对含 URL 的消息**直接拒发**（错误码
+2. **带滑动上下文窗口** —— 最近 10 轮，见 :mod:`liz_bot.ai_context`。
+   旧原型把**完整历史每轮全发**，聊到第 50 轮单次输入 20K+ token、
+   费用涨 5~10 倍 ⇒ **窗口是账单闸门，不是体验优化**。
+3. **按好感度调冷暖** —— 每会话一个 txt，见 :mod:`liz_bot.affinity`。
+4. **调一次百炼** —— 走 OpenAI 兼容接口，用 ``aiohttp`` 直发。
+5. **强制 URL 过滤** —— QQ 开放平台对含 URL 的消息**直接拒发**（错误码
    ``40054010``），而模型特别爱输出链接。所以过滤必须落在代码里，
    **不能指望提示词管住它**：提示词是建议，这里是保证。
 
@@ -17,8 +21,9 @@
   ``requirements.txt`` 变化 ⇒ Docker 的 ``COPY requirements.txt`` 层缓存失效
   ⇒ 部署要重跑 apt + pip。
 * **强制关闭思考模式**：见 :data:`_THINKING_NOTE`。
-* **不带历史**：最小版本每条消息独立调用。多轮上下文是下一步的事
-  （见 ``Qwen3.7Flash可行性调研.md`` §6）。
+* **人设不硬编码**：提示词放 ``replies.json`` 的 ``ai.system_prompt``，
+  改人设下一条消息就生效（mtime 热更新），不用走「提交 → 部署」。
+  调人设必然要反复试，热更新省掉的正是最烦的那一步。
 """
 
 from __future__ import annotations
@@ -26,12 +31,15 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import threading
+from datetime import date
 from typing import NamedTuple
 
 import aiohttp
 from botpy import logging
 
-from liz_bot import replies
+from liz_bot import affinity, replies
+from liz_bot.ai_context import STORE as _history
 
 # ⚠️ 这一行**只为副作用**：``liz_bot.config`` 在模块级把项目根的 ``.env``
 # 灌进 ``os.environ``（容器里没有该文件，是 no-op）。
@@ -77,20 +85,111 @@ MAX_CONCURRENCY = 3
 
 _SEM = asyncio.Semaphore(MAX_CONCURRENCY)
 
-#: 系统提示。
+#: 单次请求的**输入**安全上限（字符）。
 #:
-#: 刻意写得短 —— 它**每次请求都要重发**，直接计入输入 token。
-#: 最后一条（不要输出链接）是提示词层面的尽力而为，真正的保证在
-#: :func:`sanitize`。
-SYSTEM_PROMPT = (
-    "你是 QQ 群里的聊天机器人，名字叫 Liz。群里的人在 @ 你聊天。\n"
-    "要求：\n"
-    "- 用中文，口语化，像群友一样自然，别端着\n"
-    "- 简短。一两句就够，最多三句 —— 群里没人想读长文\n"
-    "- 不要输出任何网址或链接\n"
-    "- 不要用 markdown（QQ 不渲染），不要用星号加粗\n"
-    "- 不知道就说不知道，别编"
+#: 百炼是**阶梯计费**：单次输入一旦超过 32K token，**整单**单价涨 3 倍
+#: （¥0.2 → ¥0.6 / 百万）。10 轮窗口约 1K token，余量很大 ——
+#: 这个值只是「有人发了超长文」时的兜底（见 ``ai_context.HistoryStore``）。
+#:
+#: 人设约 850 字 ≈ 600 token；窗口上限 4000 字符 ≈ 2K token。合计远低于 32K。
+MAX_PROMPT_CHARS = 20000
+
+#: 每日 AI 调用次数上限（全局）。**这是「月成本 ≤ 10 元」的保证**。
+#:
+#: 实测单次约 ¥0.0005（输入 ~1.5K token + 输出 ~250 token，均在 ≤32K 档）：
+#:
+#: * 300 次/天 ⇒ **约 ¥4.5/月**
+#: * 650 次/天 ⇒ 约 ¥9.8/月（正好是用户给的 10 元上限）
+#:
+#: 取 300 是留一倍余量。正常小群（每天几十条）根本碰不到 ——
+#: 它的作用只有一个：**有人刷屏或模型陷入循环时，把账单钉死**。
+#: 可用 ``LIZ_AI_MAX_CALLS_PER_DAY`` 覆盖。
+DEFAULT_MAX_CALLS_PER_DAY = 300
+
+#: 单个会话的每日上限。防止**一个人**把全局额度刷完，让别人当天没得用。
+DEFAULT_MAX_CALLS_PER_SESSION = 60
+
+
+def _int_env(name: str, default: int) -> int:
+    """读一个正整数环境变量；缺失 / 非法 / ≤0 时用默认值。"""
+    raw = (os.environ.get(name) or "").strip()
+    if raw.isdigit() and int(raw) > 0:
+        return int(raw)
+    return default
+
+
+_lock_budget = threading.Lock()
+
+
+class _DailyBudget:
+    """按**自然日**计数的调用闸门。**线程安全**（asyncio 单线程，仍加锁兜底）。
+
+    刻意做成「预留式」：:meth:`allow` 在**调用前**就把名额扣掉。
+    否则并发时两个协程可能都读到「还剩 1 次」然后各调一次。
+    """
+
+    def __init__(self, total: int, per_session: int):
+        self.total = total
+        self.per_session = per_session
+        self._day: date | None = None
+        self._used = 0
+        self._by_session: dict[str, int] = {}
+
+    def _roll(self) -> None:
+        """跨天则清零。**调用方必须已持锁**。"""
+        today = date.today()
+        if self._day != today:
+            self._day = today
+            self._used = 0
+            self._by_session.clear()
+
+    def allow(self, key: str | None) -> bool:
+        """还有额度吗？**有就顺手扣掉**（返回值即「已预留」）。"""
+        with _lock_budget:
+            self._roll()
+            if self._used >= self.total:
+                return False
+            if key and self._by_session.get(key, 0) >= self.per_session:
+                return False
+            self._used += 1
+            if key:
+                self._by_session[key] = self._by_session.get(key, 0) + 1
+            return True
+
+    def snapshot(self) -> tuple[int, int]:
+        """``(已用, 上限)`` —— 给日志与测试看。"""
+        with _lock_budget:
+            self._roll()
+            return self._used, self.total
+
+
+_lock_budget = __import__("threading").Lock()
+
+#: 全局预算闸门。模块级单例（``test_ai_chat`` 会重置它）。
+BUDGET = _DailyBudget(
+    _int_env("LIZ_AI_MAX_CALLS_PER_DAY", DEFAULT_MAX_CALLS_PER_DAY),
+    _int_env("LIZ_AI_MAX_CALLS_PER_SESSION", DEFAULT_MAX_CALLS_PER_SESSION),
 )
+
+
+def build_system_prompt(session_key: str | None = None) -> str:
+    """拼出这次的系统提示 —— **人设 + 当前关系**。
+
+    人设**每次现取** ``replies.text("ai.system_prompt")``，不在模块级冻结：
+    类属性 / 模块常量会在 import 时求值，改文案就不生效了
+    （同 ``ai.url_removed`` 的处理，见 ``liz_bot/replies.py`` 的热更新说明）。
+
+    :param session_key: 会话键；给了就附加一行好感度与风格带（用户看不到）。
+    """
+    base = replies.text("ai.system_prompt")
+    if not session_key:
+        return base
+
+    value = affinity.load(session_key)
+    bands = replies.get("ai.style_bands")
+    style = bands[affinity.band(value)]
+    note = replies.text("ai.affinity_note", value=value, style=style)
+    return f"{base}\n\n{note}"
 
 #: ⚠️ 为什么必须显式关思考模式。
 #:
@@ -272,13 +371,38 @@ def _extract(data: dict) -> str:
     return (message.get("content") or "").strip()
 
 
-async def reply(text: str) -> str | None:
+def _build_messages(content: str, session_key: str | None) -> list[dict]:
+    """拼出这次的 ``messages`` —— 系统提示 + 滑动窗口 + 本条消息。
+
+    ⚠️ **本条消息不在窗口里**：窗口是在**一次成功的往返之后**才成对追加的
+    （见 :func:`reply`），所以这里直接 append 不会重复。
+    """
+    messages = [{"role": "system", "content": build_system_prompt(session_key)}]
+    for role, past in _history.get(session_key):
+        messages.append({"role": role, "content": past})
+    messages.append({"role": "user", "content": content})
+    return messages
+
+
+async def reply(text: str, session_key: str | None = None) -> str | None:
     """把一条群消息交给模型，返回过滤后的回复。
 
-    **任何失败都返回 ``None``**（未配置 / 网络异常 / 非 200 / 结构异常 /
+    **任何失败都返回 ``None``**（未配置 / 超额 / 网络异常 / 非 200 / 结构异常 /
     过滤后为空），由调用方决定怎么降级 —— 本函数从不抛异常。
 
+    流程（顺序有讲究）：
+
+    0. **主动问好感度** ⇒ 直接回数值，**不调 API**。既免费，又保证数值准确
+       （让模型转述数字迟早会说错）。
+    1. **预算闸门** —— 超额直接返回 ``None``（静默降级，与其它失败一致）。
+    2. 组装 messages（人设 + 窗口 + 本条）。
+    3. 调用。
+    4. 成功 ⇒ **成对**记进窗口 + 调好感度。失败则窗口不动 ——
+       只记 user 不记 assistant 会让下一轮模型以为它没回过，重复作答。
+
     :param text: 消息正文（@ 部分由调用方先去掉）。
+    :param session_key: 会话键（``群:成员``）。**不给就没有上下文、也没有好感度** ——
+        拿不到会话键时（见 ``qqgroupbot._session_key``）单轮回答，行为与从前一致。
     :returns: 可直接发进群的文本；不可用时为 ``None``。
     """
     settings = _settings_or_none()
@@ -289,12 +413,29 @@ async def reply(text: str) -> str | None:
     if not content:
         return None
 
+    # 0) 主动询问好感度 —— 走本地数值，不烧 token
+    if session_key and affinity.is_inquiry(content):
+        value = affinity.load(session_key)
+        labels = replies.get("ai.affinity_labels")
+        return replies.text(
+            "ai.affinity_ask", value=value, label=labels[affinity.band(value)]
+        )
+
+    # 1) 预算闸门。**放在 API 调用之前**，扣的是「预留名额」——
+    #    并发时两个协程不会都读到「还剩 1 次」然后各调一次。
+    if not BUDGET.allow(session_key):
+        used, total = BUDGET.snapshot()
+        _log.warning("AI 今日额度已用尽（%s/%s），本条消息静默降级", used, total)
+        return None
+
+    messages = _build_messages(content, session_key)
+    if sum(len(m["content"]) for m in messages) > MAX_PROMPT_CHARS:
+        _log.warning("AI 输入超长（>%s 字符），本条消息静默降级", MAX_PROMPT_CHARS)
+        return None
+
     payload = {
         "model": settings.model,
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": content},
-        ],
+        "messages": messages,
         "max_tokens": MAX_TOKENS,
         # ⚠️ 必须显式关掉 —— 默认是**开**的，见 _THINKING_NOTE。
         "enable_thinking": False,
@@ -302,7 +443,7 @@ async def reply(text: str) -> str | None:
 
     try:
         async with _SEM:
-            # 最小版本每次新建 session（省掉生命周期管理）。30 条/天的量，
+            # 每次新建 session（省掉生命周期管理）。几十条/天的量，
             # 多一次 TCP+TLS 握手完全无所谓；将来上量了再改成复用。
             async with aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
@@ -336,4 +477,11 @@ async def reply(text: str) -> str | None:
         # 整条回复都是链接（模型偶尔会这样），过滤完就空了 —— 不发空消息
         _log.info("AI 回复被 URL 过滤后为空，已丢弃")
         return None
+
+    # 4) 成对入窗口 + 好感度。**只在真正回了话之后**做 ——
+    #    失败的消息不进上下文，否则模型会「记住」一句它没答过的话。
+    if session_key:
+        _history.append(session_key, "user", content)
+        _history.append(session_key, "assistant", answer)
+        affinity.adjust(session_key, affinity.delta_for(content))
     return answer

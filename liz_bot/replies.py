@@ -270,6 +270,22 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     # 模型输出里的 URL 会被替换成它 —— QQ 开放平台对含 URL 的消息**直接拒发**
     # （错误码 40054010），而模型特别爱输出链接，所以过滤必须落在代码里。
     "ai.url_removed": (str, ()),
+    # ⚠️ 人设提示词**放在这里而不是硬编码进 ai_chat.py**：这个文件有 mtime
+    # 热更新，改人设下一条消息就生效，不用走「提交 → 部署」那条链路。
+    # 调人设必然要反复试，热更新省掉的正是最烦的那一步。
+    # ⚠️ 它每次请求都要重发、直接计入输入 token（约 600 token），别写成长文。
+    # ⚠️ JSON 里换行必须写 \n；本键**不是模板**，正文里不能出现花括号。
+    "ai.system_prompt": (str, ()),
+    # 好感度风格带（5 档，下标 0=最冷 → 4=最亲近）。注入系统提示，
+    # 只调节**冷暖**，不改变 Liz 的说话方式（安静 / 第三人称 / 不卖萌）。
+    # 分档理由与边界见 liz_bot/affinity.py 的 band()。
+    "ai.style_bands": (list, ()),
+    # 与 style_bands **同序**的短标签，只在「主动询问好感度」时回给用户看。
+    "ai.affinity_labels": (list, ()),
+    # 注入系统提示的「当前关系」一行（**用户看不到**）。{style} 取自 style_bands。
+    "ai.affinity_note": (str, ("value", "style")),
+    # 用户**主动问**好感度时的回复（见 ai_chat.reply 的第 0 步，不调 API）。
+    "ai.affinity_ask": (str, ("value", "label")),
     # ---- 指令表（/help 用）----
     # 每个键对应 command_router.COMMANDS 里的一条指令，值是**整行** help 文案，
     # 形如 ``/song <歌名或别名> — 按歌名或别名查歌``。

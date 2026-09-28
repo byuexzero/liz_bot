@@ -199,7 +199,10 @@ class MyClient(botpy.Client):
             # ⚠️ 未配置 key（``LIZ_AI_API_KEY``）时 ``should_handle`` 为假，
             #    整段跳过，行为与从前**完全一致**。
             if ai_chat.should_handle(message.content, session_key):
-                answer = await ai_chat.reply(message.content)
+                # ⚠️ 会话键必须传进去：AI 的**滑动窗口**与**好感度**都按它索引
+                #    （见 liz_bot/ai_context.py、liz_bot/affinity.py）。
+                #    不传 ⇒ 每条消息都是单轮、且不记好感度（行为与从前一致）。
+                answer = await ai_chat.reply(message.content, session_key)
                 if answer is not None:
                     try:
                         await message.reply(content=answer)
