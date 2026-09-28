@@ -178,18 +178,27 @@ class MyClient(botpy.Client):
             # 参数丢掉（超时自会作废，见 liz_bot/pending.py）。
             await message.reply(content=random.choice(replies.get("bot.none_reply")))
         else:
+            # 会话键**提前算一次**：AI 分支与下面的指令分发都要用，
+            # 而且必须算得**完全一样** —— 两处不一致的话，补参状态就会
+            # 「写在 A 键上、查在 B 键上」，AI 照样抢走补参。
+            session_key = _session_key(message)
+
             # ---- 群聊 AI 分支（2026-09-28）----
             # 范围：@ 机器人的群消息（本回调本身就是「群 @ 消息」事件）
-            # 且**不是指令**。触发判断收在 ``ai_chat.should_handle`` 里
-            # （前缀从 command_router 取常量、不硬编码），这样它可被自检覆盖 ——
-            # 见 _tools/test_ai_chat.py。
+            # 且**不是指令**、**且这个会话没在等补参/选候选**。
+            # 三条判断全收在 ``ai_chat.should_handle`` 里（前缀从 command_router
+            # 取常量、不硬编码），这样它可被自检覆盖 —— 见 _tools/test_ai_chat.py。
+            #
+            # ⚠️ 第 3 条（``has_pending``）是 2026-09-28 用户实测出来的冲突：
+            #    补参状态是在下面 ``reply_text`` 里消费的，AI 若先抢走这条消息，
+            #    「还差 1 个参数（难度）」之后回「紫」就永远补不上。
             #
             # ⚠️ 必须和指令路由**同进程同回调**：一个 AppID 只能有一条
             #    WebSocket 连接，AI 不能另起进程（见 Qwen3.7Flash可行性调研.md §3.1）。
             #
             # ⚠️ 未配置 key（``LIZ_AI_API_KEY``）时 ``should_handle`` 为假，
             #    整段跳过，行为与从前**完全一致**。
-            if ai_chat.should_handle(message.content):
+            if ai_chat.should_handle(message.content, session_key):
                 answer = await ai_chat.reply(message.content)
                 if answer is not None:
                     try:
@@ -209,7 +218,7 @@ class MyClient(botpy.Client):
                 # ``rich=True`` 允许把结果渲染成图片：判定细节是 5 列表格，
                 # 靠空格对齐在 QQ 的比例字体下**必然错位**，出图才看得清。
                 reply = await reply_text(
-                    message.content, session_key=_session_key(message), rich=True,
+                    message.content, session_key=session_key, rich=True,
                     notify=lambda text: self._notify(message, text))
 
                 if isinstance(reply, RichReply):

@@ -27,8 +27,9 @@
 * **一条消息按顺序补齐** —— ``/添加别名`` → 追问 → ``8 测试别名``；
 * 也可以**分多次补**，参数按顺序**叠加**。
 
-追问文案**不带指令头**（只说「还差几个、还差哪几个参数」，见 :func:`_ask_text`），
-参数名从 help 文案里的 ``<...>`` 占位符派生，所以只有一份、不会漂移。
+追问文案**不带指令头**（只说「还差几个」，再把**还没给的那些参数**的
+参数树贴在下面，见 :func:`_ask_text`），参数名从 help 文案里的 ``<...>``
+占位符派生，所以只有一份、不会漂移。
 
 同名消歧
 --------
@@ -1411,6 +1412,20 @@ def pending_store() -> pending.PendingStore:
     return _PENDING
 
 
+def has_pending(session_key: str | None) -> bool:
+    """该会话是否正在等用户补一句话（**补参数**或**选候选**）。
+
+    给**分发层**用（见 ``qqgroupbot`` / ``ai_chat.should_handle``）：有等待状态时
+    这条消息属于**那次没走完的指令**，不该被别的东西抢走 —— 否则
+    「还差 1 个参数（难度）」之后用户回「紫」，会被群聊 AI 当成闲聊，
+    补参永远凑不齐（2026-09-28 用户实测到的冲突）。
+
+    ⚠️ 走 :meth:`PendingStore.get` 而**不是** ``len()``/直查字典 —— 它顺手做过期
+    判定，所以 60 秒前的等待在这里已经是 ``False``，不会把 AI 永久挡在门外。
+    """
+    return _PENDING.get(session_key) is not None
+
+
 #: help 文案里的参数占位符：``<歌曲id>``（必填）/ ``[最小]``（可选）。
 _PARAM_TOKEN = re.compile(r"[<\[]([^<>\[\]]+)[>\]]")
 
@@ -1429,6 +1444,20 @@ def _param_names(entry: Command) -> list[str]:
 def _params_key(entry: Command) -> str:
     """该指令**参数提示**的文案键 —— ``commands.<key>_params``。"""
     return f"commands.{entry.key}_params"
+
+
+def _has_params(entry: Command) -> bool:
+    """该指令**能不能**接参数 —— 只看 ``min/max_params``（**纯数据，不读盘**）。
+
+    刻意**不**用 :func:`_param_names`（它抽的是 help 文案里的 ``<...>``）：那个要
+    读 ``replies.json``，而本函数是给**模块底部的 import 期校验**用的 ——
+    那条校验必须只碰 ``replies._SCHEMA``（纯数据），否则「文案文件缺失」会在
+    import 期变成一句 Traceback，而那是 ``run.py`` 的 ``replies.preload()``
+    负责报的（自检 ``_tools/simulate_container.py`` 有守卫盯着这个）。
+
+    ``max_params is None``（不限）也算有参数 —— ``/random [最小] [最大]`` 就是。
+    """
+    return entry.max_params != 0
 
 
 def _params_hint(entry: Command) -> str:
@@ -1452,19 +1481,20 @@ def _params_hint(entry: Command) -> str:
     它们照样可能因为「参数给多了」触发提示（``/help x``），那时整行签名就是
     最有用的信息。
     """
-    if not _param_names(entry):
+    if not _has_params(entry):
         return replies.text(f"commands.{entry.key}")
     return replies.text(_params_key(entry))
 
 
-# 有参数（``commands.<key>`` 里写了 ``<...>``）的指令**必须**有参数提示，
-# 否则参数给错时只能回一句光秃秃的「参数个数不对」，用户不知道该怎么改。
-# 与上面的 ``_MAIMAI_USAGE`` 校验同样的理由：查 ``replies._SCHEMA``（纯数据、
-# 不读盘），把「文案文件坏了」留给 run.py 的 replies.preload() 去报。
+# 有参数的指令**必须**有参数提示，否则参数给错时只能回一句光秃秃的
+# 「参数个数不对」，用户不知道该怎么改。判据用 :func:`_has_params`
+# （``min/max_params``，纯数据）而**不是** ``_param_names`` —— 后者要读
+# ``replies.json``，在 import 期读盘会让「文案文件缺失」变成 Traceback，
+# 而不是 run.py 里那一行清晰的启动错误。与上面的 ``_MAIMAI_USAGE`` 校验同理。
 _missing_params_hint = sorted(
     entry.key
     for entry in COMMANDS
-    if _param_names(entry) and _params_key(entry) not in replies._SCHEMA
+    if _has_params(entry) and _params_key(entry) not in replies._SCHEMA
 )
 if _missing_params_hint:
     raise RuntimeError(
@@ -1473,27 +1503,70 @@ if _missing_params_hint:
     )
 
 
+def _params_tree(entry: Command, wanted: list[str]) -> str:
+    """参数树里**只取** ``wanted`` 这几个参数的段；取不到时返回空串。
+
+    补参追问要的是「还没给的那几个」，不是整棵树 —— 整棵会把用户刚给过的参数
+    再摆一遍（``/songdata 143`` 之后再重复「歌曲id或歌名」纯属啰嗦）。
+
+    参数段与参数名按**下标**对应，不做字符串匹配：``commands.<key>_params``
+    与 ``commands.<key>`` 同名同序（自检 ⑳ 有守卫），而可省参数的名字在树里
+    带 ``（可省）`` 后缀 —— 按名字匹配反而要额外处理这层。
+
+    两处对不上（有人只改了其中一处）就**退回整棵树**：宁可啰嗦，也不要给一句
+    空提示。那说明文案已经坏了，自检会先报出来。
+    """
+    if not wanted:
+        return ""
+    tree = replies.text(_params_key(entry))
+    blocks: list[tuple[str, list[str]]] = []
+    for line in tree.split("\n"):
+        if line.startswith(("├─ ", "└─ ")):
+            if blocks:
+                blocks[-1][1].append(line)
+        else:
+            blocks.append((line, []))
+    names = _param_names(entry)
+    if len(blocks) != len(names):
+        return tree
+    index = {name: i for i, name in enumerate(names)}
+    picked = [blocks[index[name]] for name in wanted if name in index]
+    return "\n".join("\n".join([name, *branches]) for name, branches in picked)
+
+
 def _ask_text(entry: Command, collected: list[str]) -> str:
-    """「还差几个参数」的追问文案。
+    """「还差几个参数」的追问文案 —— 首行 + **还没给的那些参数**的参数树。
 
     ⚠️ **不带指令头** —— 不显示 ``/添加别名 <歌名> <别名> — 添加别名`` 这样的用法行。
     用户已经在补参上下文里了，再报一遍指令名与说明是噪音；他只想知道还差什么。
 
-    参数名按**已收到的个数跳过**，所以分次补参时每次提示的都是「接下来要给的」::
+    参数按**已收到的个数跳过**，所以分次补参时每次提示的都是「接下来要给的」::
 
-        /添加别名        → 还差 2 个参数（<歌名> <别名>）～ 直接发给我就好
-        8               → 还差 1 个参数（<别名>）～ 直接发给我就好
-        测试别名         → <结果>
+        /添加别名
+        → 还差 2 个参数～ 直接发给我就好
+          歌名
+          └─ 示例: 7sRef
+          别名
+          └─ 示例: 手元
+
+        8
+        → 还差 1 个参数～ 直接发给我就好
+          别名
+          └─ 示例: 手元
+
+    ⚠️ 首行**不再列参数名**（2026-09-28 用户要求「缺少时也要发参数提示」）：
+    名字就在下面的树里，列两遍既冗余、又把首行撑到 **51 格**（远超 39 格上限）
+    —— ``还差 2 个参数（歌曲id或歌名 难度）～ 直接发给我就好`` 正是这个宽度。
+    参数树本身是**多行**的，每行都短，这才符合手机气泡。
+
+    树取不到时（help 文案里没写 ``<...>``，新增指令时忘了）只回首行，
+    不会出现半截括号 —— ``test_command_table`` ⑫ 有守卫。
     """
     missing = entry.min_params - len(collected)
+    head = replies.text("router.ask_params", missing=missing)
     names = _param_names(entry)[len(collected):][:missing]
-    if names:
-        return replies.text(
-            "router.ask_params", missing=missing, params=" ".join(names)
-        )
-    # 文案里没写 <...>（新增指令时忘了）—— 退回不带括号的版本，
-    # 不会出现「还差 1 个参数（）～」这种半截括号。test_command_table 里有守卫。
-    return replies.text("router.ask_params_noparam", missing=missing)
+    tree = _params_tree(entry, names)
+    return f"{head}\n{tree}" if tree else head
 
 
 def _ask_for_params(

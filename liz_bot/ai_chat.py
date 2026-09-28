@@ -39,10 +39,14 @@ from liz_bot import replies
 # ``available()`` 会莫名其妙返回 False。
 from liz_bot import config as _config  # noqa: F401  (仅为触发 .env 加载)
 
-#: 指令前缀。**从 ``command_router`` 取，不在这里硬编码** ——
+#: 指令前缀与等待状态。**都从 ``command_router`` 取，不在这里硬编码** ——
 #: 触发判断是「AI 会不会抢走指令」的唯一防线，前缀写错就是群里指令失灵。
 #: （``command_router`` 不反向 import 本模块，无循环。）
-from liz_bot.command_router import PREFIX_MAIMAI, PREFIX_NORMAL
+from liz_bot.command_router import (
+    PREFIX_MAIMAI,
+    PREFIX_NORMAL,
+    has_pending,
+)
 
 _log = logging.get_logger()
 
@@ -152,18 +156,30 @@ def is_command(content: str) -> bool:
     return content.lstrip().startswith((PREFIX_NORMAL, PREFIX_MAIMAI))
 
 
-def should_handle(content: str) -> bool:
+def should_handle(content: str, session_key: str | None = None) -> bool:
     """该不该把这条群消息交给 AI。
 
-    = 已配置 key（:func:`available`）**且**不是指令。
+    三条同时成立才接管：
 
-    抽成函数是为了**可测**：这是本轮唯一「写反了也不报错、只在群里表现异常」
-    的判断 —— 判断过松会让 AI 抢走 ``/估分`` 之类的指令，过严则 @ 了没反应。
+    1. 已配置 key（:func:`available`）；
+    2. **不是指令**（:func:`is_command`）；
+    3. **该会话没有正在等的补参 / 选候选**（``command_router.has_pending``）。
+
+    第 3 条是 2026-09-28 用户实测出来的：AI 分支跑在 ``reply_text`` **之前**，
+    而补参状态是在 ``reply_text`` 里消费的 —— 少了它，
+    「还差 1 个参数（难度）～」之后用户回「紫」，会被 AI 当成闲聊回一句，
+    补参永远凑不齐（消歧时回序号 ``1`` 也一样被抢）。等待状态有 60 秒 TTL
+    （见 ``liz_bot.pending``），所以 AI 最多让路 60 秒，之后照常接管。
+
+    抽成函数是为了**可测**：这是唯一「写反了也不报错、只在群里表现异常」
+    的判断 —— 过松会让 AI 抢走指令或补参，过严则 @ 了没反应。
     调用方（``qqgroupbot``）只负责把范围限死在「群 @ 消息」上。
 
     :param content: 消息正文。
+    :param session_key: 会话键（``群:成员``）。**不给就当作没有等待状态** ——
+        拿不到会话键时补参本来也不工作（见 ``qqgroupbot._session_key``）。
     """
-    return available() and not is_command(content)
+    return available() and not is_command(content) and not has_pending(session_key)
 
 
 # ---------------------------------------------------------------------------
