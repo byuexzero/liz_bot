@@ -521,9 +521,9 @@ def _split_song_query(entry_key: str, cmd_params: list) -> SongSplit:
 
 
 def _too_many_params(entry_key: str) -> str:
-    """``router.too_many_params`` 的渲染结果（带该指令的**完整**用法）。"""
+    """``router.too_many_params`` 的渲染结果（带该指令的**参数提示**）。"""
     return replies.text(
-        "router.too_many_params", usage=replies.text(f"commands.{entry_key}")
+        "router.too_many_params", usage=_params_hint(_COMMANDS_BY_KEY[entry_key])
     )
 
 
@@ -1231,8 +1231,8 @@ def _execute(
         完全不受影响。
     """
     # ---- 参数个数校验 ----
-    # 文案里带上正确用法，比只说「参数不对」有用得多。
-    usage = replies.text(f"commands.{entry.key}")
+    # 文案里带上正确的参数提示（树形），比只说「参数不对」有用得多。
+    usage = _params_hint(entry)
     count = len(cmd_params)
     if count < entry.min_params:
         return replies.text("router.bad_params", usage=usage), False
@@ -1426,6 +1426,53 @@ def _param_names(entry: Command) -> list[str]:
     return _PARAM_TOKEN.findall(replies.text(f"commands.{entry.key}"))
 
 
+def _params_key(entry: Command) -> str:
+    """该指令**参数提示**的文案键 —— ``commands.<key>_params``。"""
+    return f"commands.{entry.key}_params"
+
+
+def _params_hint(entry: Command) -> str:
+    """该指令的参数提示（**树形**）—— 参数个数出错时显示的用法。
+
+    与 :func:`_param_names` 分工不同：那个只抽**参数名**（供「还差几个」的追问
+    拼接），这里给的是**完整提示** —— 每个参数名 + 范围/可选 + 示例::
+
+        乐曲ID
+        ├─ 范围: 1-99999
+        └─ 示例: 11451
+
+    为什么不直接用 ``commands.<key>``（``/help`` 的那行签名）：那一行把用法与
+    说明挤在一起，手机气泡里折行后**看不出说明属于哪条指令**，而且超长
+    （``/songdata`` 那行 57 格，远超 39 格上限）。树形只讲参数、每行都短。
+
+    ⚠️ **缺键不静默回退** —— 模块底部有 import 期校验（有参数的指令必须有
+    ``_params``），所以有参数时这里可以直接取。
+
+    无参数的指令（``/help`` ``/hello``）没有参数树，返回 ``/help`` 那行签名：
+    它们照样可能因为「参数给多了」触发提示（``/help x``），那时整行签名就是
+    最有用的信息。
+    """
+    if not _param_names(entry):
+        return replies.text(f"commands.{entry.key}")
+    return replies.text(_params_key(entry))
+
+
+# 有参数（``commands.<key>`` 里写了 ``<...>``）的指令**必须**有参数提示，
+# 否则参数给错时只能回一句光秃秃的「参数个数不对」，用户不知道该怎么改。
+# 与上面的 ``_MAIMAI_USAGE`` 校验同样的理由：查 ``replies._SCHEMA``（纯数据、
+# 不读盘），把「文案文件坏了」留给 run.py 的 replies.preload() 去报。
+_missing_params_hint = sorted(
+    entry.key
+    for entry in COMMANDS
+    if _param_names(entry) and _params_key(entry) not in replies._SCHEMA
+)
+if _missing_params_hint:
+    raise RuntimeError(
+        "这些指令有参数却没有参数提示文案（commands.<key>_params）："
+        f"{_missing_params_hint} —— 补进 replies.json 并在 replies._SCHEMA 登记"
+    )
+
+
 def _ask_text(entry: Command, collected: list[str]) -> str:
     """「还差几个参数」的追问文案。
 
@@ -1458,11 +1505,9 @@ def _ask_for_params(
     这样 :func:`handle_command` 的直接调用方（自检脚本、等价性测试）行为不变。
     """
     if not session_key:
-        # 无状态调用：没有「下一条消息」可接，只能报用法。
+        # 无状态调用：没有「下一条消息」可接，只能报参数提示。
         # 这里的 {usage} 是**刻意保留**的 —— 用户看不到指令头就无从下手。
-        return replies.text(
-            "router.bad_params", usage=replies.text(f"commands.{entry.key}")
-        )
+        return replies.text("router.bad_params", usage=_params_hint(entry))
 
     _PENDING.put(session_key, entry.key, collected)
     return _ask_text(entry, collected)

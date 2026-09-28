@@ -293,6 +293,30 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "commands.song": (str, ()),
     "commands.alias_query": (str, ()),
     "commands.alias_add": (str, ()),
+    # 参数提示（**树形**）—— ``commands.<key>_params``，参数个数出错 / 追问时
+    # 显示的就是它（见 ``command_router._params_hint``）。
+    #
+    # 形如::
+    #
+    #     乐曲ID
+    #     ├─ 范围: 1-99999
+    #     └─ 示例: 11451
+    #
+    # ⚠️ **有参数的指令必须登记**：``command_router`` 在 import 时校验
+    # 「``commands.<key>`` 里有 ``<...>`` 的指令」都有对应的 ``_params``。
+    # 缺了不是静默回退，而是直接拒绝启动。
+    #
+    # ⚠️ 参数名行要与 ``commands.<key>`` 的 ``<...>`` **同名同序**，
+    # 可省参数在名字后加 ``（可省）``；``test_command_table`` 有守卫。
+    "commands.random_params": (str, ()),
+    "commands.id_params": (str, ()),
+    "commands.songdata_params": (str, ()),
+    "commands.estimate_params": (str, ()),
+    "commands.bm_params": (str, ()),
+    "commands.name_params": (str, ()),
+    "commands.song_params": (str, ()),
+    "commands.alias_query_params": (str, ()),
+    "commands.alias_add_params": (str, ()),
 }
 
 
