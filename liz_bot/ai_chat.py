@@ -74,6 +74,14 @@ DEFAULT_MODEL = "qwen3.7-flash"
 #: 烧掉 ``400 × 0.8 / 1e6 ≈ 0.0003`` 元。
 MAX_TOKENS = 400
 
+#: 采样温度。qwen 默认 1.0，这里略调高，**目的是打破句式坍缩**。
+#:
+#: ⚠️ 2026-09-29 实测（用户反馈「回答过于模板」）：默认温度下 6 条**完全不同**的
+#: 输入，回复**全部以「呢」结尾、半数以「嗯」开头**，句式坍缩成 ``[嗯，]X呢``。
+#: 更糟的是**窗口里那些同款回复会变成新的示例** ⇒ 正反馈，越聊越模板。
+#: 解药是三件事一起做：**示例多样化**（见 replies.json）+ 放开长度 + 这个温度。
+TEMPERATURE = 1.1
+
 #: 单次请求超时（秒）。
 #:
 #: 被动消息的有效期是 5 分钟，给足余量但仍然要有上限 —— 否则一次卡死
@@ -371,17 +379,67 @@ def _extract(data: dict) -> str:
     return (message.get("content") or "").strip()
 
 
-def _build_messages(content: str, session_key: str | None) -> list[dict]:
+def _build_messages(
+    content: str, session_key: str | None, *, use_history: bool = True
+) -> list[dict]:
     """拼出这次的 ``messages`` —— 系统提示 + 滑动窗口 + 本条消息。
 
     ⚠️ **本条消息不在窗口里**：窗口是在**一次成功的往返之后**才成对追加的
     （见 :func:`reply`），所以这里直接 append 不会重复。
+
+    :param use_history: 关掉就是「只带人设 + 本条」—— 内容审核自愈时用（见 :func:`reply`）。
     """
     messages = [{"role": "system", "content": build_system_prompt(session_key)}]
-    for role, past in _history.get(session_key):
-        messages.append({"role": role, "content": past})
+    if use_history:
+        for role, past in _history.get(session_key):
+            messages.append({"role": role, "content": past})
     messages.append({"role": "user", "content": content})
     return messages
+
+
+def _is_inspection(body: str) -> bool:
+    """响应体是不是「内容审核拦截」。
+
+    ⚠️ 必须和普通 400（参数写错之类）**分开**：前者能靠丢历史自愈，
+    后者重试多少次都一样。判据用 ``data_inspection_failed`` 这个 code。
+    """
+    return "data_inspection_failed" in body
+
+
+async def _post(settings: _Settings, payload: dict) -> tuple[dict | None, str]:
+    """发一次请求。
+
+    :returns: ``(响应体, 状态)``。状态是 ``"ok"`` / ``"inspection"`` / ``"error"``。
+        ``inspection`` 的含义与处理见 :func:`reply` 的自愈逻辑。
+    """
+    try:
+        async with _SEM:
+            # 每次新建 session（省掉生命周期管理）。几十条/天的量，
+            # 多一次 TCP+TLS 握手完全无所谓；将来上量了再改成复用。
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
+            ) as session:
+                async with session.post(
+                    f"{settings.base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {settings.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        _log.warning(
+                            "AI 调用失败：HTTP %s %s", resp.status, body[:200]
+                        )
+                        return None, (
+                            "inspection" if _is_inspection(body) else "error"
+                        )
+                    return await resp.json(), "ok"
+    except Exception:
+        # 刻意吞掉一切 —— AI 挂了不该影响机器人的其它功能
+        _log.exception("AI 调用异常")
+        return None, "error"
 
 
 async def reply(text: str, session_key: str | None = None) -> str | None:
@@ -396,9 +454,15 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
        （让模型转述数字迟早会说错）。
     1. **预算闸门** —— 超额直接返回 ``None``（静默降级，与其它失败一致）。
     2. 组装 messages（人设 + 窗口 + 本条）。
-    3. 调用。
+    3. 调用。**被内容审核拦下时丢历史重试一次**（见下）。
     4. 成功 ⇒ **成对**记进窗口 + 调好感度。失败则窗口不动 ——
        只记 user 不记 assistant 会让下一轮模型以为它没回过，重复作答。
+
+    ⚠️ **为什么要有第 3 步的自愈**：百炼对**整条输入**做内容审核，
+    命中就返回 400 ``data_inspection_failed``。而窗口是**粘性**的 ——
+    那条被判定不合适的历史**会一直跟着**，导致这个会话之后每次请求都 400，
+    **不会自愈**，AI 从此不吭声（2026-09-28 日志实测：连续两次 400 后就没反应了）。
+    ⇒ 丢掉该会话窗口 + 只用「人设 + 本条」重试一次。
 
     :param text: 消息正文（@ 部分由调用方先去掉）。
     :param session_key: 会话键（``群:成员``）。**不给就没有上下文、也没有好感度** ——
@@ -437,35 +501,28 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
         "model": settings.model,
         "messages": messages,
         "max_tokens": MAX_TOKENS,
+        "temperature": TEMPERATURE,
         # ⚠️ 必须显式关掉 —— 默认是**开**的，见 _THINKING_NOTE。
         "enable_thinking": False,
     }
 
-    try:
-        async with _SEM:
-            # 每次新建 session（省掉生命周期管理）。几十条/天的量，
-            # 多一次 TCP+TLS 握手完全无所谓；将来上量了再改成复用。
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=REQUEST_TIMEOUT)
-            ) as session:
-                async with session.post(
-                    f"{settings.base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {settings.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        _log.warning(
-                            "AI 调用失败：HTTP %s %s", resp.status, body[:200]
-                        )
-                        return None
-                    data = await resp.json()
-    except Exception:
-        # 刻意吞掉一切 —— AI 挂了不该影响机器人的其它功能
-        _log.exception("AI 调用异常")
+    data, kind = await _post(settings, payload)
+
+    # ⚠️ 内容审核拦了**整条输入** ⇒ 历史里可能有一条被判定为不合适的内容，
+    #    而它**会一直留在窗口里** ⇒ 这个会话之后每次请求都会带着它一起 400，
+    #    **而且不会自愈**，AI 从此不吭声。
+    #    （2026-09-28 日志实测 botpy.log:957 —— 连续两次 400 之后就没反应了。）
+    # ⇒ 丢掉该会话的窗口，用「人设 + 本条」重试一次。
+    #    重试还失败 ⇒ 是**本条消息本身**有问题，那就不回（静默降级，与其它失败一致）。
+    if kind == "inspection" and session_key:
+        _log.warning("输入被内容审核拦截，丢弃该会话窗口后重试一次")
+        _history.drop(session_key)
+        data, kind = await _post(
+            settings,
+            {**payload, "messages": _build_messages(content, session_key, use_history=False)},
+        )
+
+    if kind != "ok" or data is None:
         return None
 
     answer = _extract(data)
