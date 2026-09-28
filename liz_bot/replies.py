@@ -136,15 +136,10 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "maimai.upload_cooldown": (str, ("seconds",)),
     "maimai.upload_cooldown_hint": (str, ("seconds",)),
     "maimai.upload_no_toolchain": (str, ()),
-    # ---- 远端上传（本机助手）—— 见 liz_bot/upload_agent.py ----
-    # ⚠️ 这两条**刻意不提「本机助手」「服务器」**（2026-09-27）：看这条回复的
-    # 多半是群友，不是机器人主人 —— 说「本机助手不在线」他既看不懂也帮不上忙。
-    # 说「上传通道没开着」他至少知道「现在不行，等会儿再来」。
-    # 真正的原因（心跳多久没更新、队列在哪）由日志承担。
-    "maimai.upload_agent_offline": (str, ()),
-    # ⚠️ 与 upload_fail 分开：超时意味着**根本没发包**，
-    # 说「碎片没能堆进塔」会让人以为真传过一遍了。
-    "maimai.upload_agent_timeout": (str, ()),
+    # ⚠️ `#上传` 当前的**总闸门**（2026-09-28 用户定案：本机助手「bug 多、维护
+    # 麻烦」已回退，指令保留但不再真发包）。见 maimai_upload.UPLOAD_AVAILABLE。
+    # 刻意不提「服务器」「出口 IP」这类术语 —— 排查信息由日志承担。
+    "maimai.upload_unavailable": (str, ()),
     "maimai.upload_dry": (str, ()),
     "maimai.upload_title": (str, ("title", "difficulty", "level")),
     "maimai.upload_title_plain": (str, ("difficulty",)),

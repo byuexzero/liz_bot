@@ -21,7 +21,7 @@
 import os
 import sys
 
-from liz_bot import healthz, replies, runtime_paths, upload_agent
+from liz_bot import healthz, replies, runtime_paths
 from liz_bot import qqgroupbot
 from liz_bot.config import ConfigError, load_bot_config
 
@@ -40,11 +40,6 @@ def main() -> None:
         print(line)
     for note in runtime_paths.ensure_dirs():
         print(note)
-
-    # 1b. `#上传` 是否走「本机助手」通道。**必须打进启动日志**：开了远端上传
-    #     但本机助手没跑时，群里的表现是「上传通道没开着」，而真正的线索
-    #     （心跳多久没更新、队列在哪）只有这一行能给。
-    print(upload_agent.describe())
 
     # 2. 校验回复文本。**刻意放在配置校验与健康检查之前**：文案文件缺失或
     #    损坏时全部指令都会失败，宁可在启动日志里一行报错退出，也不要等到

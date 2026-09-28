@@ -1369,6 +1369,17 @@ async def handle_maimai_command(cmd_name, cmd_params, *, session_key=None,
     if entry is None:
         return replies.text("maimai.unparsed")
 
+    # ⚠️ **`#上传` 的总闸门必须放在参数个数校验之前**（2026-09-28）。
+    # 它现在发不出去（云服务器出口被拒，见 maimai_upload.UPLOAD_AVAILABLE）。
+    # 若只放在 handler 里，光杆一条 `#上传` 会先撞上「参数不够 + 用法」，
+    # 反而让群友以为「给对参数就能用」。闸门关着时，任何输入都只回同一句话。
+    # 注意 `_upload_module()` 拿不到模块时**不在这里拦** —— 那条仍走
+    # `maimai.upload_no_toolchain`（见 _m_upload），语义不同。
+    if entry.key == "upload":
+        module = _upload_module()
+        if module is not None and not module.UPLOAD_AVAILABLE:
+            return replies.text("maimai.upload_unavailable")
+
     params = list(cmd_params or ())
     count = len(params)
     usage = replies.text(_MAIMAI_USAGE[entry.key])

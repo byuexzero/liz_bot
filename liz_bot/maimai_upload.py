@@ -48,7 +48,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from liz_bot import judge_detail, replies, score_estimate, song_query, upload_agent
+from liz_bot import judge_detail, replies, score_estimate, song_query
 from liz_bot.text_layout import char_width, display_width
 
 from maimai import user_data as UD
@@ -64,6 +64,19 @@ logger = logging.getLogger(__name__)
 #: 扫卡二维码前缀与标准长度（``8 + 12 + 64``，见 ``maimai/qr.py``）。
 QR_PREFIX = "SGWCMAID"
 QR_MIN_LEN = 84
+
+#: ⚠️⚠️ ``#上传`` 的**总闸门**。
+#:
+#: 为什么是 ``False``（2026-09-28 用户定案）：云服务器的出口 IP 被舞萌服务端拒
+#: （连纯读接口都是 HTTP 200 + 0 字节，见技能 ``maimai-empty-response``），
+#: 服务器**发不出**这份 playlog。上一版为此加了「本机助手」（``69eeb10``：
+#: 服务器落盘 → 本机 SSH 取走 → 本机家宽发包），能跑通，但**坑多、维护麻烦**
+#: （.bat 编码、askpass、心跳判活、队列权限……），用户要求回退。
+#:
+#: 与其让群友白等一次注定失败的发包，不如立刻回一句「暂时传不了」——
+#: 指令本身保留，群友不会困惑。**下游代码原封不动**，换出口方案
+#: （境内住宅代理 / 换网络 / 其它路子）时把这里改回 ``True`` 即可恢复。
+UPLOAD_AVAILABLE = False
 
 #: 两次上传之间至少间隔的秒数 —— 见模块 docstring 的「请求量守卫」。
 COOLDOWN_SECONDS = 30.0
@@ -739,63 +752,6 @@ async def upload(
 
 
 # ---------------------------------------------------------------------------
-# 远端执行（本机助手）
-# ---------------------------------------------------------------------------
-
-async def _run_remote(
-    score: dict[str, Any],
-    qr: str,
-    *,
-    note: str | None = None,
-    dry: bool = False,
-) -> UploadReport | None:
-    """把这次上传交给**本机助手**跑（见 :mod:`liz_bot.upload_agent`）。
-
-    与 :func:`upload` 的差别**只有「谁发包」**：闸门、补判定明细、渲染全还在
-    服务器上，所以回复长什么样与本地执行**逐字一致**。
-
-    为什么不能把整条 ``#上传`` 搬去本机：成绩来源是**服务器进程内存**里的
-    ``/估分`` 缓存（``score_estimate.CACHE``），本机读不到。所以服务器负责
-    「算出要传什么」，本机只负责「把包发出去」。
-
-    :return: 报告；**等超时返回 ``None``** —— 调用方必须给一句专门的话，
-        不能复用「碎片没能堆进塔」：那会让人以为真传过一遍了。
-    """
-    global _cooldown_until
-
-    task_id = ""
-    async with _UPLOAD_LOCK:
-        try:
-            task_id = upload_agent.submit(score, qr, note=note, dry=dry)
-            result = await upload_agent.wait(task_id)
-        finally:
-            # 与本地执行同一条规矩：冷却从本次结束算起，成败都一样。
-            # 放在 finally 里 —— 助手超时也算「刚试过一次」，立刻重试同样危险。
-            _cooldown_until = time.monotonic() + COOLDOWN_SECONDS
-            if task_id:
-                upload_agent.cleanup(task_id)
-
-    if result is None:
-        return None
-
-    fields = upload_agent.report_fields(result)
-    if not fields.get("ok"):
-        # 失败原因**只进日志** —— 与 :func:`upload` 里那行同样的处置
-        # （``render`` 的 docstring 说明了为什么不进回复）。
-        logger.warning("传分失败（本机助手）：%s", fields.get("message"))
-
-    return UploadReport(
-        ok=bool(fields.get("ok")),
-        stage=str(fields.get("stage") or "本机助手"),
-        message=str(fields.get("message") or ""),
-        score=score,
-        note=note,
-        before=fields.get("before"),
-        after=fields.get("after"),
-    )
-
-
-# ---------------------------------------------------------------------------
 # 指令入口
 # ---------------------------------------------------------------------------
 
@@ -843,6 +799,8 @@ async def handle_upload(cmd_params, session_key, *, notify=None) -> str:
 
     判断的**先后顺序**是有讲究的
     ----------------------------
+    0. **总闸门最先**（``UPLOAD_AVAILABLE``）—— 当下发不出去，
+       直接回一句就走，**不做任何解析**。
     1. **先判二维码** —— 「你没给码」比「正在忙」更贴近用户当下要改的东西，
        而且这个判断不需要任何计算。
     2. **再定成绩来源**（解析参数 / 读缓存）—— 这一步只做字符串解析与查表，
@@ -857,10 +815,6 @@ async def handle_upload(cmd_params, session_key, *, notify=None) -> str:
        反正这次也传不了，没必要白跑。
     5. **给了字段就一定走「字段」这条路**（哪怕给少了）—— 掉回缓存会把用户
        刚打的字悄悄丢掉，而「还差几个字段」才是他真正需要看到的。
-    6. **远端上传时先确认本机助手在线**（``MM_REMOTE_UPLOAD=1``，见
-       :mod:`liz_bot.upload_agent`）—— 助手不在线就立刻说一句，
-       别让用户干等 150 秒超时。排在忙/冷却之后：那两条与助手无关，
-       先报更贴近用户当下能改的东西。
 
     :param notify: ``async (text) -> None`` —— **任务开始前先发一条**的通路
         （由 ``qqgroupbot`` 注入，走被动回复 ``msg_seq=2``，不消耗主动消息配额）。
@@ -868,6 +822,12 @@ async def handle_upload(cmd_params, session_key, *, notify=None) -> str:
         收不到，所以闸门全过、确定要传时先发一句预计等待时长
         （见 :func:`intro_text`）。``None`` = 不发，自检脚本与等价性测试走这条。
     """
+    # ⚠️ 总闸门（见 UPLOAD_AVAILABLE）—— 现在发不出去，直接回一句就走。
+    # 刻意放在**所有解析之前**：参数写错了也没必要纠正——
+    # 这个指令当下根本用不了，先把人拦在门外就行。
+    if not UPLOAD_AVAILABLE:
+        return replies.text("maimai.upload_unavailable")
+
     params = list(cmd_params or [])
     usage = replies.text("maimai.upload_usage")
 
@@ -897,15 +857,6 @@ async def handle_upload(cmd_params, session_key, *, notify=None) -> str:
     if waiting > 0:
         return replies.text("maimai.upload_cooldown", seconds=int(waiting) + 1)
 
-    # ---- 远端上传：本机助手不在线就别让人白等（见 docstring 第 6 条）----
-    remote = upload_agent.enabled()
-    if remote:
-        alive, age = upload_agent.agent_alive()
-        if not alive:
-            shown = "无心跳" if age == float("inf") else f"{age:.0f}s 未心跳"
-            logger.warning("传分：本机助手不在线（%s），本次不发", shown)
-            return replies.text("maimai.upload_agent_offline")
-
     dry = dry_mode()
     # 闸门全过了、确定要传 —— 先把「大概要多久」告诉用户（真跑约 80 秒）。
     # ⚠️ 干跑**不发**：它不联网、不节流，几毫秒就完，报个「80 秒」是误导。
@@ -917,13 +868,7 @@ async def handle_upload(cmd_params, session_key, *, notify=None) -> str:
             logger.warning("传分：预告消息发送失败，继续上传", exc_info=True)
 
     score, note = fill_note_counts(score)
-    if remote:
-        report = await _run_remote(score, qr, note=note, dry=dry)
-        if report is None:
-            # ⚠️ 专用文案 —— 超时意味着**根本没发包**，不能说「碎片没能堆进塔」。
-            return replies.text("maimai.upload_agent_timeout")
-    else:
-        report = await upload(score, qr, note=note, dry=dry)
+    report = await upload(score, qr, note=note, dry=dry)
     return render(report, source=source, dry=dry, cooldown=cooldown_left())
 
 
