@@ -62,7 +62,7 @@ from typing import NamedTuple
 import aiohttp
 from botpy import logging
 
-from liz_bot import affinity, replies
+from liz_bot import affinity, ai_blacklist, replies
 from liz_bot.ai_context import STORE as _history
 
 # ⚠️ 这一行**只为副作用**：``liz_bot.config`` 在模块级把项目根的 ``.env``
@@ -302,20 +302,64 @@ def is_command(content: str) -> bool:
     return content.lstrip().startswith((PREFIX_NORMAL, PREFIX_MAIMAI))
 
 
+def is_blacklisted(session_key: str | None) -> bool:
+    """这个会话是否在 **AI 黑名单**上（见 :mod:`liz_bot.ai_blacklist`）。
+
+    抽成函数而不是让 ``qqgroupbot`` 直接 import ``ai_blacklist``：
+    调用方只需要「问 ai_chat」一件事，名单的存储位置不该扩散出去。
+    """
+    return ai_blacklist.is_blocked(session_key)
+
+
+def should_swallow(content: str, session_key: str | None) -> bool:
+    """黑名单要不要**直接吞掉**这条消息（一个字都不回）。
+
+    三条同时成立才吞：
+
+    1. 在黑名单上；
+    2. **不是指令**；
+    3. **这个会话没在等补参**。
+
+    ⚠️ 为什么不能只靠 ``should_handle`` 为假来「让路」：让路只会**落到下面**，
+    而下面会把非指令消息交给 ``reply_text`` ⇒ 回一句
+    「Liz 看不懂呢：「原文」」—— 那等于**把拉黑对象的话回显了一遍**，
+    既不是拉黑，还白搭一条消息。
+
+    ⚠️ 第 3 条不能少（否则就是个隐蔽的坑）：拉黑是「不和 Liz 聊天」，
+    不是「封禁这个人」—— 他完全可以照常用 ``/估分``。而**补参回复**
+    （机器人问「难度？」他回「紫」）**长得就是一条闲聊**，少了这一条
+    就会被吞掉，那条指令永远补不齐，而且不报错。
+
+    :param content: 消息正文。
+    :param session_key: 会话键（``群:成员``）。
+    """
+    return (
+        is_blacklisted(session_key)
+        and not is_command(content)
+        and not has_pending(session_key)
+    )
+
+
 def should_handle(content: str, session_key: str | None = None) -> bool:
     """该不该把这条群消息交给 AI。
 
-    三条同时成立才接管：
+    四条同时成立才接管：
 
     1. 已配置 key（:func:`available`）；
     2. **不是指令**（:func:`is_command`）；
-    3. **该会话没有正在等的补参 / 选候选**（``command_router.has_pending``）。
+    3. **该会话没有正在等的补参 / 选候选**（``command_router.has_pending``）；
+    4. **该会话不在 AI 黑名单上**（:func:`is_blacklisted`）。
 
     第 3 条是 2026-09-28 用户实测出来的：AI 分支跑在 ``reply_text`` **之前**，
     而补参状态是在 ``reply_text`` 里消费的 —— 少了它，
     「还差 1 个参数（难度）～」之后用户回「紫」，会被 AI 当成闲聊回一句，
     补参永远凑不齐（消歧时回序号 ``1`` 也一样被抢）。等待状态有 60 秒 TTL
     （见 ``liz_bot.pending``），所以 AI 最多让路 60 秒，之后照常接管。
+
+    第 4 条是 2026-09-29 用户要求补的（「加入 aichat 黑名单」）。
+    ⚠️ 它只让 **AI 让路**，不影响指令 —— 调用方还要再判断一次
+    「黑名单 + 非指令 ⇒ 直接不接话」，否则会掉进 ``bot.not_command``
+    的「Liz 看不懂呢：「原文」」，等于**把对方的话回显了一遍**。
 
     抽成函数是为了**可测**：这是唯一「写反了也不报错、只在群里表现异常」
     的判断 —— 过松会让 AI 抢走指令或补参，过严则 @ 了没反应。
@@ -325,7 +369,12 @@ def should_handle(content: str, session_key: str | None = None) -> bool:
     :param session_key: 会话键（``群:成员``）。**不给就当作没有等待状态** ——
         拿不到会话键时补参本来也不工作（见 ``qqgroupbot._session_key``）。
     """
-    return available() and not is_command(content) and not has_pending(session_key)
+    return (
+        available()
+        and not is_command(content)
+        and not has_pending(session_key)
+        and not is_blacklisted(session_key)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -395,11 +444,23 @@ def sanitize(text: str) -> str:
     return out.strip()
 
 
-def _extract(data: dict) -> str:
+def _member_of(session_key: str | None) -> str:
+    """会话键里的**成员 openid** —— 日志用。
+
+    ⚠️ 为什么专门记它：**这是拿到 openid 的唯一途径**。
+    QQ 开放平台不暴露 QQ 号，而配 AI 黑名单要的正是 openid
+    （见 :mod:`liz_bot.ai_blacklist`）。不记的话运维只能靠猜。
+    """
+    return session_key.rsplit(":", 1)[-1] if session_key else "-"
+
+
+def _extract(data: dict, session_key: str | None = None) -> str:
     """从响应体里取出回复文本，并记一行 token 用量。
 
     记用量是为了**能盯成本** —— 万一哪天忘了关思考模式，日志里
     ``思维链`` 那个数会立刻涨到几百，一眼就能看出来。
+
+    :param session_key: 只用于日志末尾的「成员 openid」（见 :func:`_member_of`）。
     """
     try:
         message = data["choices"][0]["message"]
@@ -410,10 +471,11 @@ def _extract(data: dict) -> str:
     usage = data.get("usage") or {}
     details = usage.get("completion_tokens_details") or {}
     _log.info(
-        "AI 用量：输入 %s / 输出 %s token（其中思维链 %s）",
+        "AI 用量：输入 %s / 输出 %s token（其中思维链 %s）· 成员 %s",
         usage.get("prompt_tokens", "?"),
         usage.get("completion_tokens", "?"),
         details.get("reasoning_tokens", 0),
+        _member_of(session_key),
     )
     return (message.get("content") or "").strip()
 
@@ -597,7 +659,7 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
     if kind != "ok" or data is None:
         return None
 
-    answer = _extract(data)
+    answer = _extract(data, session_key)
     if not answer:
         return None
 

@@ -228,6 +228,18 @@ class MyClient(botpy.Client):
                     return
                 # AI 不可用 / 调用失败 ⇒ 落到下面走原逻辑，行为与从前一致
 
+            elif ai_chat.should_swallow(message.content, session_key):
+                # ⚠️ **AI 黑名单**（2026-09-29 用户要求）：直接吞掉，一个字都不回。
+                #    为什么不只靠 should_handle 为假「让路」：让路会落到下面，
+                #    而非指令消息在下面会被 reply_text 回一句
+                #    「Liz 看不懂呢：「原文」」—— 等于把拉黑对象的话**回显**了一遍。
+                #    判据（含「不吞补参回复」）见 ai_chat.should_swallow。
+                _log.info(
+                    "AI 黑名单命中，不接话：成员 %s",
+                    session_key.rsplit(":", 1)[-1] if session_key else "-",
+                )
+                return
+
             try:
                 # 前缀识别（`/` 本机指令 / `#` 舞萌命名空间）、解析、分发，
                 # 全部在 command_router.reply_text 里 —— 本类只负责收发、

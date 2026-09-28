@@ -9,6 +9,7 @@
 ====================================  ==================  ====================
 ``ai_chat/``                           ``qqgroup-ai-bot``  AI 会话历史
 ``ai_chat/affinity/``                  ``ai_chat``         每个会话一个好感度 txt
+``ai_chat/blacklist.txt``              ``ai_blacklist``    AI 聊天黑名单（一行一个 openid）
 ``bot_log/``                           ``qqgroupbot``      botpy 运行日志
 ====================================  ==================  ====================
 
@@ -103,6 +104,15 @@ AI_CHAT_DIR = _pick("ai_chat", _HERE / "ai_chat")
 #: 容器重建后清零等于把「认识你很久了」这件事抹掉。
 AFFINITY_DIR = os.path.join(AI_CHAT_DIR, "affinity")
 
+#: AI 聊天黑名单文件（见 :mod:`liz_bot.ai_blacklist`）。
+#:
+#: ⚠️ 它是**文件**不是目录 —— 但同样必须可写、必须持久化：
+#: 名单是运维手改的运行时数据，丢了就得重配一遍。
+#: 文件不存在时 :mod:`liz_bot.ai_blacklist` 会自动写一份带说明的模板。
+#:
+#: ⚠️ **绝不能进 git**：仓库是 public，谁被拉黑不该被公开。
+BLACKLIST_FILE = os.path.join(AI_CHAT_DIR, "blacklist.txt")
+
 #: botpy 日志目录。
 LOG_DIR = _pick("bot_log", _REPO_ROOT / "bot_log")
 
@@ -119,6 +129,7 @@ def describe() -> list[str]:
         f"数据来源：{origin}",
         f"AI 会话：{AI_CHAT_DIR}",
         f"好感度：{AFFINITY_DIR}",
+        f"AI 黑名单：{BLACKLIST_FILE}",
         f"日志目录：{LOG_DIR}",
         f"曲库基线：{SONG_FILE_PATH}",
         f"别名基线：{ALIAS_FILE_PATH}",
