@@ -146,7 +146,9 @@
       "Liz 很信任你"
     ],
     "affinity_note": "【关系】对方对你的好感度是 {value}/100。{style}\n（好感度只调节你说话的冷暖，不改变你说话的方式：仍然是 Liz、仍然安静简短。不要在回复里报出这个数值，除非对方主动问。）",
-    "affinity_ask": "好感度是 {value} 呢。{label}"
+    "affinity_ask": "好感度是 {value} 呢。{label}",
+    "reply_blocked": "……这个话题，Liz 就不接了呢。",
+    "reply_rejected": "……刚才那句，Liz 就不说了。"
   },
   "commands": {
     "help": "/help — 查看指令列表",

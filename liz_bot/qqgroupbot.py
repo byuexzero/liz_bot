@@ -115,15 +115,21 @@ _ERROR_MSG_SEQ = 2
 #:
 #: 用 3 而不是 1 或 2：``seq=1`` 可能已被那次发图占用（发图本身走
 #: ``msg_id + msg_seq=1``），``seq=2`` 是 :data:`_ERROR_MSG_SEQ` 的地盘。
-#: 四个 seq 互不相同，任何一条路径都能发得出去。
+#: 五个 seq 互不相同，任何一条路径都能发得出去。
 _RICH_FALLBACK_MSG_SEQ = 3
 
-#: 「任务进行中先发一条」用的 ``msg_seq``（见 :meth:`LizBot._notify`）。
+#: 「任务进行中先发一条」用的 ``msg_seq``（见 :meth:`MyClient._notify`）。
 #:
 #: 目前只有 ``#上传`` 用：它真跑约 80 秒，开始前先发一句预计等待时长。
 #: 用 4 而不是 1 —— 那条预告发完之后，**结果**还要用 ``seq=1`` 发出去，
 #: 两者不能撞。同样走被动回复（带 ``msg_id``），**不消耗主动消息配额**。
 _NOTIFY_MSG_SEQ = 4
+
+#: **合规兜底**用的 ``msg_seq``（见 :meth:`MyClient._send_safe`）。
+#:
+#: 回复被平台拒发时，用 5 补一条固定推托。⚠️ 群聊被动回复的 ``msg_seq``
+#: 上限就是 5（``1``~``5``），这里正好是最后一个空位 —— **再加路径就得复用**。
+_SAFE_FALLBACK_MSG_SEQ = 5
 
 
 def _session_key(message: GroupMessage) -> str:
@@ -207,9 +213,18 @@ class MyClient(botpy.Client):
                     try:
                         await message.reply(content=answer)
                     except Exception:
-                        # 发不出去就只记日志 —— 不再回错误提示，
-                        # 否则一次失败会往群里连发两条消息
-                        _log.exception("AI 回复发送失败")
+                        # ⚠️ **合规兜底第 3 层**（2026-09-29）。
+                        #    发不出去 = 平台把这条内容拒了（或网络真挂了）。
+                        #    原来这里**只记日志** ⇒ 群里一个字都没有，
+                        #    用户看到的就是「Liz 又不理人了」——
+                        #    与 2026-09-28 那次「疑似崩溃」是同一个现象。
+                        # ⇒ 补一条**固定的、安全的**推托（常量，不含任何
+                        #    可能被拒的内容，所以不会二次被拒）。
+                        #    网络真挂时这条同样发不出去，日志里能看到两条失败。
+                        _log.exception("AI 回复发送失败，改发固定推托")
+                        await self._send_safe(
+                            message, replies.text("ai.reply_rejected")
+                        )
                     return
                 # AI 不可用 / 调用失败 ⇒ 落到下面走原逻辑，行为与从前一致
 
@@ -254,6 +269,38 @@ class MyClient(botpy.Client):
             msg_type=0,
             content=text,
         )
+
+    async def _send_safe(self, message: GroupMessage, text: str) -> None:
+        """补发一条**固定文案** —— 内容合规兜底的最后一层。
+
+        触发点只有一个：AI 的回复 ``message.reply()`` 抛了异常。
+        最常见的成因是**平台把那条内容拒了**（敏感内容），其次是网络抖动。
+
+        ⚠️ **为什么不去分辨错误码**：botpy 在非 2xx 时只把响应体的 ``message``
+        透出来（见 ``botpy/http.py`` 的 ``_handle_response``），QQ 的业务码
+        （``40034006`` 之类）**拿不到**。所以这里不猜 —— 任何发送失败都补一条。
+        这样做的代价很小：**网络真挂时这条同样发不出去**（同一个连接），
+        只有「网络正常但内容被拒」才会真的补上，行为正好是我们想要的。
+
+        ⚠️ ``text`` **必须是常量**（``replies.json`` 的 ``ai.reply_rejected``）——
+        把模型原文拼进来就等于把被拒的东西再发一遍。
+
+        ⚠️ ``msg_seq`` 用 :data:`_SAFE_FALLBACK_MSG_SEQ`（5）：``seq=1`` 刚才
+        已经试过并失败了，「相同的 msg_id + msg_seq 重复发送会失败」。
+
+        本方法**刻意不抛异常**（同 :meth:`_notify`）—— 兜底都失败了就没辙了，
+        再往外抛只会让外层当成「处理消息失败」并再回一句错误提示。
+        """
+        try:
+            await self.api.post_group_message(
+                group_openid=message.group_openid,
+                msg_id=message.id,
+                msg_seq=_SAFE_FALLBACK_MSG_SEQ,
+                msg_type=0,
+                content=text,
+            )
+        except Exception:
+            _log.exception("合规兜底文案也发送失败")
 
     async def _reply_error(self, message: GroupMessage, error: Exception) -> None:
         """把异常回给用户。
