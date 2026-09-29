@@ -219,6 +219,12 @@ BUDGET = _DailyBudget(
     _int_env("LIZ_AI_MAX_CALLS_PER_SESSION", DEFAULT_MAX_CALLS_PER_SESSION),
 )
 
+#: 主动推送占用的**会话键**（见 :func:`proactive_line`）。
+#:
+#: 它不是真的会话 —— 只是给 :data:`BUDGET` 一个记账用的名字，
+#: 顺便让日志里的「成员」字段一眼能看出这是主动推送而不是某人发的消息。
+_PROACTIVE_BUDGET_KEY = "__proactive__"
+
 
 def build_system_prompt(session_key: str | None = None) -> str:
     """拼出这次的系统提示 —— **人设 + 当前关系**。
@@ -385,7 +391,13 @@ def should_handle(content: str, session_key: str | None = None) -> bool:
 #:
 #: ⚠️ 不能只用 ``\S+``：中文标点不是空白，``见 https://a.com，然后`` 会把
 #: 「，然后」一起吞进 URL，替换后句子就残了。
-_URL_STOP = r"\s，。！？、；：“”‘’（）【】《》…—～·"
+#:
+#: ⚠️ ``|`` / ``｜`` 是 2026-09-29 加进来的，为的是 :data:`BUBBLE_SEPARATOR`：
+#: 模型若把分隔符**紧贴**在链接后面（``https://a.com|||下一句``），
+#: 竖线不在终止集里就会被当成 URL 的一部分**连「下一句」一起删掉** ——
+#: 分隔符没了、正文也残了，而且**不报错**。URL 里本来也不会出现裸竖线
+#: （真要写会编码成 ``%7C``），所以加进去是纯收益。
+_URL_STOP = r"\s，。！？、；：“”‘’（）【】《》…—～·|｜"
 
 #: markdown 链接 ``[文字](url)`` —— 只留文字。
 #:
@@ -478,6 +490,41 @@ _SENTENCE_END = "。！？…～"
 #: :func:`_split_sentences` 补回来**（不然会**静默吞掉**开头的「……」）。
 _SENTENCE_RE = re.compile(r"[^" + _SENTENCE_END + r"]+[" + _SENTENCE_END + r"]*")
 
+#: 模型自己写的**气泡分隔符**（2026-09-29 用户要求）。
+#:
+#: 语义是「**模型建议在哪切**」，**不是**「模型决定拆几条」—— 切完照样要过
+#: :func:`split_bubbles` 的裁决（合并纯标点段、裁到 :data:`MAX_BUBBLES`）。
+#: 为什么必须留这层裁决：``msg_seq`` 只有 1~5 五个坑位（见 ``qqgroupbot``
+#: 的分配表），模型想拆六条也只能砍到三条。
+#:
+#: ⚠️ 为什么用 ``|||`` 而不是换行：换行会和「模型自己分行」那条老路径混在一起，
+#: **漏解析了也看不出来**（换行本来就允许）。``|||`` 是显式的，不解析就是 bug。
+#: ⚠️ 为什么人设里**只写规则、示例区一个字都不加**：本项目在「**示例的权重压倒
+#: 规则**」上栽过两次 —— 示例里出现一次分隔符，就会退化成「每条都拆三条」。
+BUBBLE_SEPARATOR = "|||"
+
+#: 分隔符的**宽松匹配**：2 个及以上的竖线（半角/全角混用、中间夹空格都算）。
+#:
+#: ⚠️ 用「2+」而不是死磕 3：模型写 ``||``（少一根）、``｜｜｜``（全角）、
+#: ``| | |``（夹空格）都该被认出来。**单个 ``|`` 不算** —— 太常见，容易误伤。
+#: ⚠️ 必须是**非捕获组**：带捕获组的正则在 :func:`re.split` 里会把分隔符本身
+#: 也塞进结果列表。
+_BUBBLE_SEP_RE = re.compile(r"[|｜]\s*(?:[|｜]\s*)+")
+
+
+def _split_on_separator(text: str) -> list[str]:
+    """按模型写的分隔符切开，并**吃掉所有分隔符**。
+
+    返回单元素列表表示「模型没写分隔符」或「写了但只切出一段」，
+    调用方据此回退到确定性均分。
+
+    ⚠️ **必须吃掉全部**：残留一个 ``|||`` 就会被当成正文发到群里。
+    :func:`re.split` 在这里是安全的 —— 每一处出现都会被切开。
+    """
+    if not _BUBBLE_SEP_RE.search(text):
+        return [text]
+    return [part.strip() for part in _BUBBLE_SEP_RE.split(text)]
+
 
 def _merge_orphans(parts: list[str]) -> list[str]:
     """把「纯标点」的段并回**相邻**的段（``……`` 这类）。"""
@@ -552,12 +599,19 @@ def split_bubbles(text: str, limit: int = MAX_BUBBLES) -> list[str]:
     **为什么要拆**（2026-09-29 用户要求）：一条长回复砸过去很像机器；
     真人聊天是一条一条蹦的。「多回几条」能明显减少生硬感。
 
-    两条路径，**先看模型自己有没有分行**：
+    三条路径，**按优先级**：
 
-    1. 模型自己写了多行（人设里教过）⇒ **逐行就是气泡**，超出的并进最后一条。
-       模型主动分行说明它本来就想分两条说，这比我们猜更准。
-    2. 只有一行 ⇒ 短于 :data:`MIN_SPLIT_WIDTH` 不拆；够长就按句末标点
+    1. 模型自己写了 :data:`BUBBLE_SEPARATOR` ⇒ **按它给的位置切**。
+       切完仍要过裁决（合并纯标点段、裁到 ``limit``）——
+       模型只能**建议**在哪切，拆几条永远是这里说了算。
+    2. 模型自己写了多行 ⇒ **逐行就是气泡**，超出的并进最后一条。
+    3. 只有一行 ⇒ 短于 :data:`MIN_SPLIT_WIDTH` 不拆；够长就按句末标点
        **均分**成 2~3 段。
+
+    ⚠️ **路径 1 是「加分项」不是「必答题」**：模型没写分隔符时，行为与从前
+    **一字不差**。所以这条新路径最坏的结果只是「模型不用它」，不会让回复变差。
+    也**不套** :data:`MIN_SPLIT_WIDTH` —— 模型显式分了「在的。」/「怎么了？」
+    这种短句是对的，用宽度去合并反而是错的。
 
     ⚠️ 纯函数、不联网、不抛异常 —— 拆错了最多是语气怪一点，绝不该让回复发不出去。
 
@@ -567,6 +621,17 @@ def split_bubbles(text: str, limit: int = MAX_BUBBLES) -> list[str]:
     """
     if limit < 1:
         limit = 1
+
+    # ① 模型自己标了切点（2026-09-29）
+    parts = [part for part in _split_on_separator(text) if part]
+    if len(parts) > 1:
+        parts = _merge_orphans(parts)
+        if len(parts) > limit:
+            parts = parts[: limit - 1] + ["\n".join(parts[limit - 1:])]
+        return parts
+    # 没写分隔符，或写了但只切出一段 ⇒ 用**已剥掉分隔符**的正文走老逻辑。
+    # ⚠️ 不能继续用原 `text`：``|||a`` 这种会把 ``|||`` 当正文发出去。
+    text = "".join(parts) if parts else text
 
     lines = [ln.strip() for ln in text.splitlines()]
     lines = [ln for ln in lines if ln]
@@ -824,3 +889,65 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
         _history.append(session_key, "assistant", answer)
         affinity.adjust(session_key, affinity.delta_for(content))
     return answer
+
+
+#: 主动开口时附加的**临时指令**（2026-09-29）。
+#:
+#: ⚠️ 刻意短、刻意**不带示例**：一给示例，模型就会把示例的句式学进每一条回复
+#: （本项目在「示例权重压倒规则」上栽过两次，见 :data:`BUBBLE_SEPARATOR` 的注释）。
+#: ⚠️ 最后一句「别提这段说明」是防泄漏 —— 不加的话模型偶尔会回一句
+#: 「（我主动说点什么）」之类把指令本身复述出来。
+_PROACTIVE_HINT = (
+    "现在没有人在跟你说话，是你在群里自己想开口。"
+    "随便说一句轻松的话，十来个字，别提问、别招呼谁，也别提这段说明。"
+)
+
+
+async def proactive_line() -> str | None:
+    """生成一句 Liz **自己开口**的话 —— 群聊主动推送用（2026-09-29）。
+
+    与 :func:`reply` 的三点不同：
+
+    1. **不带任何用户消息** —— 只有人设 + :data:`_PROACTIVE_HINT`；
+    2. **不写窗口、不动好感度** —— 它不是对谁的回复，塞进滑动窗口只会污染上下文
+       （下一次有人 @ 时模型会以为它已经跟人聊过一轮）；
+    3. 会话键固定成 ``__proactive__``，只用来走 :data:`BUDGET` 的额度。
+
+    ⚠️ **仍然要过预算闸门**：定时任务最容易悄悄把当日额度吃光，
+       而 :data:`BUDGET` 是全局的 —— 吃完别人当天就没得用了。
+
+    任何失败返回 ``None``（未配置 / 超额 / 网络异常 / 结构异常 / 过滤后为空），
+    调用方据此**跳过本次推送**，绝不发半截东西。本函数从不抛异常。
+    """
+    settings = _settings_or_none()
+    if settings is None:
+        return None
+
+    if not BUDGET.allow(_PROACTIVE_BUDGET_KEY):
+        used, total = BUDGET.snapshot()
+        _log.warning("主动推送：AI 今日额度已用尽（%s/%s），跳过", used, total)
+        return None
+
+    payload = {
+        "model": settings.model,
+        "messages": [
+            {"role": "system", "content": replies.text("ai.system_prompt")},
+            {"role": "user", "content": _PROACTIVE_HINT},
+        ],
+        "max_tokens": MAX_TOKENS,
+        "temperature": TEMPERATURE,
+        # ⚠️ 同 :func:`reply` —— 不显式关掉就是白烧 82 倍输出 token。
+        "enable_thinking": False,
+    }
+
+    data, kind = await _post(settings, payload)
+    if kind != "ok" or data is None:
+        _log.warning("主动推送：生成失败（%s）", kind)
+        return None
+
+    answer = sanitize(_extract(data, _PROACTIVE_BUDGET_KEY))
+    if not answer:
+        _log.info("主动推送：生成结果为空或全是链接，跳过")
+        return None
+    return answer
+

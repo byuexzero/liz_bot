@@ -8,7 +8,7 @@ import botpy
 from botpy import logging
 from botpy.message import GroupMessage
 
-from liz_bot import ai_chat, media_upload, replies
+from liz_bot import ai_chat, media_upload, proactive, replies
 # 注：``PREFIX_NORMAL`` / ``PREFIX_MAIMAI`` 现在只在 ``ai_chat.should_handle``
 # 里用到（触发判断收在那边，便于自检），本模块不再直接引。
 from liz_bot.command_router import RichReply, reply_text
@@ -187,6 +187,11 @@ class MyClient(botpy.Client):
         _log.info(f"机器人 {self.robot.name} 已就绪！")
         # 让健康检查端点反映真实就绪状态（见 liz_bot/healthz.py）
         set_health_status("ready")
+        # 群聊**主动推送**（2026-09-29）。默认关闭 ——
+        # 两个环境变量任一为空就什么都不做，见 liz_bot/proactive.py 的模块注释。
+        # ⚠️ 必须防重复启动：gateway 心跳重连会再次触发 on_ready，
+        #    不去重的话每重连一次就多一个定时器（去重逻辑在 proactive.start 里）。
+        proactive.start(self.push_proactive)
 
     async def on_group_at_message_create(self, message: GroupMessage):
         """监听群聊@消息，解析并处理指令"""
@@ -400,6 +405,51 @@ class MyClient(botpy.Client):
             )
         except Exception:
             _log.exception("合规兜底文案也发送失败")
+
+    async def push_proactive(self, group_openid: str, text: str) -> bool:
+        """**主动推送**一条消息到群（不带 ``msg_id``）—— 2026-09-29。
+
+        ⚠️⚠️ **这条路和被动回复不是一回事**。它需要**群主在手机 QQ 里打开**
+        「机器人主动在群聊内发言」（群聊 → 设置 → 机器人）。没开的话网关返
+        ``40034105 主动消息失败, 无权限`` —— 本方法据此打一条**说清原因**的日志，
+        不然运维只会看到一句「发不出去」然后去查错方向。
+
+        ⚠️ 还有一条**官方原话的静默失败**：群成员可以关掉「接收主动消息」，
+        关掉之后主动消息一律失败。⇒ 主动推送是**尽力而为**，不是可靠通道。
+
+        ⚠️ 为什么不用 ``message.reply()`` / ``message.reply(content=...)``：
+        那些都会带上 ``msg_id``，就又变成被动回复了。主动推送**必须**走裸的
+        ``post_group_message``，**不传 ``msg_id``、也不传 ``msg_seq``**
+        （``msg_seq`` 只在和 ``msg_id`` 联用时才有意义）。
+
+        ⚠️ 调用方是 :mod:`liz_bot.proactive` 的定时器 —— 默认不启动，
+        两个环境变量都配了才会跑到这里。
+
+        本方法**刻意不抛异常**（同 :meth:`_notify`）—— 推送失败只是少一句话，
+        不该把定时器循环带崩。
+
+        :returns: 成功 ``True``，失败 ``False``。
+        """
+        if not text:
+            return False
+        try:
+            await self.api.post_group_message(
+                group_openid=group_openid,
+                msg_type=0,
+                content=text,
+            )
+            return True
+        except Exception as exc:
+            detail = str(exc)
+            if "40034105" in detail or "无权限" in detail:
+                _log.error(
+                    "主动推送被拒（40034105）—— 群主没开「机器人主动在群聊内发言」。"
+                    "路径：手机 QQ → 群聊 → 设置 → 机器人。%s",
+                    detail[:200],
+                )
+            else:
+                _log.exception("主动推送失败：%s", detail[:200])
+            return False
 
     async def _reply_error(self, message: GroupMessage, error: Exception) -> None:
         """把异常回给用户。
