@@ -136,6 +136,46 @@ _NOTIFY_MSG_SEQ = 4
 #: 上限就是 5（``1``~``5``），这里正好是最后一个空位 —— **再加路径就得复用**。
 _SAFE_FALLBACK_MSG_SEQ = 5
 
+#: 环境变量：设成 ``1`` 就**强制走被动回复**（运维兜底开关）。
+#:
+#: 主动消息有两条**静默失败**（官方文档）：群主没开「机器人主动在群聊内发言」
+#: ⇒ ``40034105``；群成员各自关掉「接收主动消息」⇒ 对那个人一律失败。
+#: 代码里已经做了「失败自动降级 + 冷却」，这个变量是**不想等冷却**时的直通开关。
+_ENV_FORCE_PASSIVE = "LIZ_AI_PASSIVE_REPLY"
+
+#: 主动消息失败后的**冷却秒数**。
+#:
+#: ⚠️ 为什么要冷却：开关没开时，若每条消息都先试一次主动，就要白跑一次
+#: 失败请求（多几百毫秒延迟 + 刷屏日志）。冷却期内直接走被动。
+#: 开关重新打开后，最多等这么久就会自动切回主动。
+_PROACTIVE_COOLDOWN_SECONDS = 600.0
+
+#: 主动消息可用性：``None`` = 还没试过，``True`` / ``False`` = 已知。
+_proactive_ok: "bool | None" = None
+
+#: 主动消息的**冷却截止时刻**（``time.monotonic()``）。
+_proactive_retry_at: float = 0.0
+
+
+def _proactive_usable() -> bool:
+    """AI 回复此刻该不该**先试主动消息**。
+
+    判据三条：① 没被 ``LIZ_AI_PASSIVE_REPLY=1`` 强制关掉；
+    ② 还没失败过，或上次是成功的；③ 失败过但**冷却期已过**（重新试一次）。
+    """
+    if os.environ.get(_ENV_FORCE_PASSIVE, "").strip() == "1":
+        return False
+    if _proactive_ok is not False:
+        return True
+    return time.monotonic() >= _proactive_retry_at
+
+
+def _mark_proactive(ok: bool) -> None:
+    """记下这次主动消息的结果。失败要**冷却**一段时间再试。"""
+    global _proactive_ok, _proactive_retry_at
+    _proactive_ok = ok
+    _proactive_retry_at = 0.0 if ok else time.monotonic() + _PROACTIVE_COOLDOWN_SECONDS
+
 #: AI 回复的**气泡**从哪个 ``msg_seq`` 开始（见 :meth:`MyClient._send_bubbles`）。
 #:
 #: ⚠️⚠️ 坑位只有 5 个，来源是官方文档《消息收发概述》的「频率与时效规则」：
@@ -342,17 +382,19 @@ class MyClient(botpy.Client):
         **为什么要拆**（2026-09-29 用户要求）：一次砸一整段很像机器，
         真人聊天是一条一条蹦的。拆开的规则在 :func:`ai_chat.split_bubbles`。
 
-        ⚠️ **为什么用被动回复而不是「主动消息」**：主动消息虽然能发更多条，
-        但有两个硬伤 ——
-        ① 用户可以在 QQ 客户端关掉「允许主动发送」，关掉之后主动消息
-           **一律发送失败**（官方文档原话），又一个**静默失败**；
-        ② 消耗每群每日 1000 条的配额。
-        而被动回复**每条 @ 最多能回 5 次**（官方文档：群聊 5 分钟 / 5 次），
-        2~3 条气泡完全够用，还不花配额。
+        **为什么优先走主动消息**（2026-09-29 用户要求「改成主动消息，还有 at 引用」）：
+        被动回复在 QQ 客户端里会带上「回复 @某人」的引用样式，看着像在回工单；
+        主动消息（不带 ``msg_id``）就是**普通发言**，更接近真人插话。
+        附带好处：主动消息**不受「每条消息 5 分钟内只能回 5 次」的限制**
+        （那条只作用于被动回复），``msg_seq`` 的坑位约束也就不再是瓶颈。
 
-        ⚠️ **任一条发不出去就中止剩下的**，并补一条固定推托
-        （:meth:`_send_safe`，``msg_seq=5``）—— 半截话比不说更难受，
-        而且「说不出话」正是本项目最容易伪装成「崩溃」的现象。
+        ⚠️⚠️ **但它有两条静默失败**，所以是「主动优先 + 失败自动降级回被动」，
+        绝不让 Liz 因为这条路不通就彻底不吭声（「@ 了没反应」正是本项目
+        最容易伪装成「崩溃」的现象）。细节见 :data:`_ENV_FORCE_PASSIVE`。
+
+        ⚠️⚠️ **只有第一条失败才降级** —— 那时**一条都没发出去**，整批回退被动
+        不会重复；第一条成功、后面某条失败 ⇒ 已经发出去了，**不能再回退**
+        （会重复），只能补一条固定推托（:meth:`_send_safe`）。
 
         本方法**刻意不抛异常**：失败已经兜住了，再往外抛只会让外层
         当成「处理消息失败」并再回一句错误提示，同一件事报两次。
@@ -361,9 +403,27 @@ class MyClient(botpy.Client):
         if not bubbles:
             return
 
+        # ① 主动优先
+        if _proactive_usable():
+            first = await self._post_proactive(message.group_openid, bubbles[0])
+            _mark_proactive(first)
+            if first:
+                for bubble in bubbles[1:]:
+                    # 让气泡之间有个人味儿的间隔（见 _BUBBLE_GAP_SECONDS）
+                    await asyncio.sleep(_BUBBLE_GAP_SECONDS)
+                    if not await self._post_proactive(message.group_openid, bubble):
+                        # 已经发出过一部分 ⇒ 不能回退（会重复），补兜底推托
+                        await self._send_safe(message, replies.text("ai.reply_rejected"))
+                        return
+                return
+            # 第一条就失败 ⇒ 一条都没发出去，安全整批回退被动
+            _log.warning(
+                "主动消息不可用，本次改走被动回复（共 %d 条）", len(bubbles)
+            )
+
+        # ② 被动回复（原路径；也是主动不可用时的降级路径）
         for index, bubble in enumerate(bubbles):
             if index:
-                # 让气泡之间有个人味儿的间隔（见 _BUBBLE_GAP_SECONDS）
                 await asyncio.sleep(_BUBBLE_GAP_SECONDS)
             try:
                 await self.api.post_group_message(
@@ -418,32 +478,19 @@ class MyClient(botpy.Client):
         except Exception:
             _log.exception("合规兜底文案也发送失败")
 
-    async def push_proactive(self, group_openid: str, text: str) -> bool:
-        """**主动推送**一条消息到群（不带 ``msg_id``）—— 2026-09-29。
+    async def _post_proactive(self, group_openid: str, text: str) -> bool:
+        """发**一条主动消息**（不带 ``msg_id`` / ``msg_seq``）。成功 True、失败 False。
 
-        ⚠️⚠️ **这条路和被动回复不是一回事**。它需要**群主在手机 QQ 里打开**
-        「机器人主动在群聊内发言」（群聊 → 设置 → 机器人）。没开的话网关返
-        ``40034105 主动消息失败, 无权限`` —— 本方法据此打一条**说清原因**的日志，
-        不然运维只会看到一句「发不出去」然后去查错方向。
+        ⚠️ 主动消息**必须**走裸的 ``post_group_message``：``message.reply()``
+        系列都会带上 ``msg_id``，那就又变回被动回复了。而 ``msg_seq`` 只在
+        和 ``msg_id`` 联用时才有意义，所以主动发送**两个都不带**。
 
-        ⚠️ 还有一条**官方原话的静默失败**：群成员可以关掉「接收主动消息」，
-        关掉之后主动消息一律失败。⇒ 主动推送是**尽力而为**，不是可靠通道。
+        ⚠️ 失败时的日志要**说清原因**（尤其 ``40034105``），不然运维只会看到
+        一句「发不出去」然后去查错方向：``40034105`` = 群主没开开关；
+        ``40034100`` = 超频（**说明能力是通的**，两者互斥）。
 
-        ⚠️ 为什么不用 ``message.reply()`` / ``message.reply(content=...)``：
-        那些都会带上 ``msg_id``，就又变成被动回复了。主动推送**必须**走裸的
-        ``post_group_message``，**不传 ``msg_id``、也不传 ``msg_seq``**
-        （``msg_seq`` 只在和 ``msg_id`` 联用时才有意义）。
-
-        ⚠️ 调用方是 :mod:`liz_bot.proactive` 的定时器 —— 默认不启动，
-        两个环境变量都配了才会跑到这里。
-
-        本方法**刻意不抛异常**（同 :meth:`_notify`）—— 推送失败只是少一句话，
-        不该把定时器循环带崩。
-
-        :returns: 成功 ``True``，失败 ``False``。
+        本方法**刻意不抛异常** —— 调用方（AI 气泡 / 定时推送）各自有自己的兜底。
         """
-        if not text:
-            return False
         try:
             await self.api.post_group_message(
                 group_openid=group_openid,
@@ -455,13 +502,38 @@ class MyClient(botpy.Client):
             detail = str(exc)
             if "40034105" in detail or "无权限" in detail:
                 _log.error(
-                    "主动推送被拒（40034105）—— 群主没开「机器人主动在群聊内发言」。"
-                    "路径：手机 QQ → 群聊 → 设置 → 机器人。%s",
+                    "主动消息被拒（40034105）—— 群主没开「机器人主动在群聊内发言」。"
+                    "路径：手机 QQ → 群聊 → 设置 → 机器人。%d 秒内改走被动回复。%s",
+                    int(_PROACTIVE_COOLDOWN_SECONDS),
+                    detail[:200],
+                )
+            elif "40034100" in detail:
+                _log.warning(
+                    "主动消息超频（40034100，说明能力是通的），%d 秒内改走被动回复：%s",
+                    int(_PROACTIVE_COOLDOWN_SECONDS),
                     detail[:200],
                 )
             else:
-                _log.exception("主动推送失败：%s", detail[:200])
+                _log.exception("主动消息发送失败：%s", detail[:200])
             return False
+
+    async def push_proactive(self, group_openid: str, text: str) -> bool:
+        """**主动推送**一条消息到群 —— 定时发言用（:mod:`liz_bot.proactive`）。
+
+        ⚠️ 与 :meth:`_post_proactive` 是**同一条通道**（都不带 ``msg_id``），
+        区别只在调用方：这个给定时器，那个给 AI 回复。
+
+        ⚠️ 这条路需要**群主在手机 QQ 里打开**「机器人主动在群聊内发言」
+        （群聊 → 设置 → 机器人）；另外**群成员可以各自关掉「接收主动消息」**，
+        关掉之后一律失败 ⇒ 主动推送是**尽力而为**，不是可靠通道。
+
+        ⚠️ 调用方是定时器 —— 默认不启动，两个环境变量都配了才会跑到这里。
+
+        :returns: 成功 ``True``，失败 ``False``（不抛）。
+        """
+        if not text:
+            return False
+        return await self._post_proactive(group_openid, text)
 
     async def _reply_error(self, message: GroupMessage, error: Exception) -> None:
         """把异常回给用户。
