@@ -429,6 +429,64 @@ _BARE_DOMAIN_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: 尖括号形式的 @ 占位符 —— ``<@!openid>`` / ``<@openid>``。
+#:
+#: QQ 开放平台把 @某人 编码进正文用的就是这种形式（与频道一致）。
+#: ⚠️ 长度卡 64 是为了**不误吃**：万一模型写了 ``<@xxx`` 却没闭合，
+#: 有上限的匹配最多吃掉一小段，不会把整条回复吞掉。
+_AT_PLACEHOLDER_RE = re.compile(r"<@!?[^<>\s]{1,64}>")
+
+#: 裸露的 ``@昵称`` —— **只认行首 / 空白之后的那个**。
+#:
+#: ⚠️⚠️ 为什么「前面必须是空白或行首」这个前提不能省：不加的话，
+#: ``邮箱 a@b.com`` 里的 ``@b.com`` 会被当成 @ 剥掉（邮箱被劈成两半）。
+#: 加上之后 ``邮箱 a@b.com`` 原样保留，而 ``@张三 你好`` 里的 ``@张三`` 会被剥。
+#:
+#: ⚠️ 终止集里**必须**带标点：否则 ``@张三，你好`` 会连「，你好」一起吃掉。
+#: ⚠️ 也不怕 ``@张三https://a.com`` —— 在 :func:`sanitize` 里这一步排在
+#: URL 过滤**之后**，那时链接已经换成占位符了。
+_AT_BARE_RE = re.compile(
+    r"(?<![^\s])@[^\s@，。！？、；：,.!?;:（）()\[\]【】《》]{1,24}"
+)
+
+#: 剥完 @ 之后可能留在行首的孤立标点（``@张三，你好`` → ``，你好``）。
+_LEADING_PUNCT_RE = re.compile(r"^[\s，。！？、；：,.!?;:]+")
+
+
+def strip_mentions(text: str) -> str:
+    """剥掉文本里的 @ —— 尖括号占位符与裸露的 ``@昵称``。
+
+    **为什么要剥**（2026-09-29 用户要求「每句去掉 at 消息，这样比较真实」）：
+
+    群友 @ Liz 时，``message.content`` 里的 @ 部分是**原样**送进来的
+    （``qqgroupbot`` 过去直接把它交给 :func:`reply`），模型看到
+    「``@莉兹 你好``」这种输入，回复时就会**照着格式**也带一个 @ ——
+    小模型模仿格式的倾向很强，本项目在「示例权重压倒规则」上已经栽过两次。
+
+    ⇒ **输入侧先剥才是根治**（模型没有可模仿的样本），
+    输出侧（:func:`sanitize` 末尾）再兜一层。
+
+    ⚠️ 只剥「尖括号占位符」与「行首/空白后的 @」，**不动** ``a@b.com``
+    这类正常文本里的 @（见 :data:`_AT_BARE_RE` 的注释）。
+
+    :param text: 任意文本。
+    :returns: 剥掉 @ 并 strip 后的文本。
+    """
+    src = text or ""
+    # 快速路径：**没有 @ 就原样返回** —— 保证对普通文本零副作用
+    # （下面的空白压缩不该在没有 @ 的句子上白跑一遍）。
+    if "@" not in src:
+        return src.strip()
+
+    # 占位符换成空格而不是空串：``@A<@!x>@B`` 才不会粘成 ``@A@B``
+    # 让后面那条规则漏掉第二个。
+    out = _AT_PLACEHOLDER_RE.sub(" ", src)
+    out = _AT_BARE_RE.sub("", out)
+    out = _LEADING_PUNCT_RE.sub("", out)
+    # 剥完容易留下连续空格（``你说得对 @张三 确实`` → 两个空格），压成一个。
+    out = re.sub(r"\s{2,}", " ", out)
+    return out.strip()
+
 
 def sanitize(text: str) -> str:
     """把模型输出里的 URL 全部拿掉。**这一步不能省**。
@@ -454,6 +512,9 @@ def sanitize(text: str) -> str:
         out = re.sub(
             "(?:" + re.escape(placeholder) + r"[\s、,，]*){2,}", placeholder, out
         )
+    # ⚠️ 剥 @ 放在**最后**：URL 此刻已经变成占位符，
+    #    ``@张三https://a.com`` 不会被 :data:`_AT_BARE_RE` 连 ``https`` 一起吃掉。
+    out = strip_mentions(out)
     return out.strip()
 
 
@@ -602,7 +663,7 @@ def split_bubbles(text: str, limit: int = MAX_BUBBLES) -> list[str]:
     三条路径，**按优先级**：
 
     1. 模型自己写了 :data:`BUBBLE_SEPARATOR` ⇒ **按它给的位置切**。
-       切完仍要过裁决（合并纯标点段、裁到 ``limit``）——
+       切完仍要过裁决（整条太短就不认、合并纯标点段、裁到 ``limit``）——
        模型只能**建议**在哪切，拆几条永远是这里说了算。
     2. 模型自己写了多行 ⇒ **逐行就是气泡**，超出的并进最后一条。
     3. 只有一行 ⇒ 短于 :data:`MIN_SPLIT_WIDTH` 不拆；够长就按句末标点
@@ -610,8 +671,9 @@ def split_bubbles(text: str, limit: int = MAX_BUBBLES) -> list[str]:
 
     ⚠️ **路径 1 是「加分项」不是「必答题」**：模型没写分隔符时，行为与从前
     **一字不差**。所以这条新路径最坏的结果只是「模型不用它」，不会让回复变差。
-    也**不套** :data:`MIN_SPLIT_WIDTH` —— 模型显式分了「在的。」/「怎么了？」
-    这种短句是对的，用宽度去合并反而是错的。
+    ⚠️ 但路径 1 **不套** :data:`MIN_SPLIT_WIDTH` 的**逐条**判据 —— 模型显式分了
+    「在的。」/「怎么了？」这种短句是对的，用宽度去合并反而是错的；
+    套的是**整条**的判据（见实现），保证「短回复只有一条」。
 
     ⚠️ 纯函数、不联网、不抛异常 —— 拆错了最多是语气怪一点，绝不该让回复发不出去。
 
@@ -625,6 +687,13 @@ def split_bubbles(text: str, limit: int = MAX_BUBBLES) -> list[str]:
     # ① 模型自己标了切点（2026-09-29）
     parts = [part for part in _split_on_separator(text) if part]
     if len(parts) > 1:
+        joined = "".join(parts)
+        # ⚠️ **整条本来就很短 ⇒ 不认分隔符**（确定性护栏，2026-09-29 实测加的）。
+        #    模型会把「在的。|||你找我吗？」这种八个字也切开 —— 而拆开只剩
+        #    两个半截短句，**比不拆还生硬**。判据复用 :data:`MIN_SPLIT_WIDTH`，
+        #    与下面「短于 20 格不拆」同源，保证「短回复永远只有一条」这个不变量。
+        if display_width(joined) <= MIN_SPLIT_WIDTH:
+            return [joined]
         parts = _merge_orphans(parts)
         if len(parts) > limit:
             parts = parts[: limit - 1] + ["\n".join(parts[limit - 1:])]
@@ -789,7 +858,8 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
     至少让「沉默」变成「Liz 明确不接这个话题」。这也是「内容合规兜底」的一层，
     另外两层在 :func:`liz_bot.qqgroupbot` 的发送侧（见 ``_send_safe``）。
 
-    :param text: 消息正文（@ 部分由调用方先去掉）。
+    :param text: 消息正文。@ 部分由 :func:`strip_mentions` 在这里剥掉
+        （调用方 ``qqgroupbot`` 也会先剥一次，两处同源、不会不一致）。
     :param session_key: 会话键（``群:成员``）。**不给就没有上下文、也没有好感度** ——
         拿不到会话键时（见 ``qqgroupbot._session_key``）单轮回答，行为与从前一致。
     :returns: 可直接发进群的文本；不可用时为 ``None``。
@@ -798,7 +868,9 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
     if settings is None:
         return None
 
-    content = (text or "").strip()
+    # ⚠️ @ 先剥掉（2026-09-29）：群友 @ Liz 时 content 里的 @ 是**原样**
+    #    进来的，不剥的话模型会照着格式也回一个 @（见 strip_mentions）。
+    content = strip_mentions(text or "").strip()
     if not content:
         return None
 

@@ -210,19 +210,31 @@ class MyClient(botpy.Client):
                 return
             cache.add(dup_key)
 
+        # ⚠️ @ 部分在这里**统一剥掉**（2026-09-29 用户要求「每句去掉 at 消息」）：
+        #    群友 @ Liz 时，``content`` 里的 @ 是**原样**送达的，模型看到
+        #    「``@莉兹 你好``」这种输入就会照着格式也回一个 @。
+        #    剥干净之后有两个好处：
+        #      ① 模型没有可模仿的样本（这是根因，输出侧只是兜底）；
+        #      ② ``@莉兹 /random`` 这种也终于能被指令前缀认出来（剥完即 ``/random``）。
+        #    ⚠️ **必须在空消息判断之前** —— 只发一个 ``@莉兹`` 应当算空消息；
+        #    否则会掉进 AI 分支、剥完为空、最后被 ``reply_text`` 回一句「看不懂」。
+        content = ai_chat.strip_mentions(message.content)
+
         # 附件诊断：**只记数量与类型，绝不记正文**（群里的话不该进日志）。
         # ⚠️ 为什么值得专门记：QQ 群聊的图片消息到底以什么形态送达
         #    （``content`` 为空？``attachments`` 有值？）**在文档里没有明说**，
         #    只能靠实测确认。不记的话「发图没反应」永远只能猜。
+        #    ⚠️ 记的是**剥 @ 之后**的长度 —— 与下面的空消息判据同一个口径
+        #    （只发一个 ``@莉兹`` 时剥完就是 0，本来就该算「没说话」）。
         if message.attachments:
             _log.info(
                 "收到带附件的 @ 消息：%d 个，类型 %s，正文 %d 字",
                 len(message.attachments),
                 [a.content_type for a in message.attachments],
-                len(message.content.strip()),
+                len(content),
             )
 
-        if message.content.strip() == "":
+        if content == "":
             # 空消息时的随机回复候选，文案见 replies.json 的 bot.none_reply。
             # 刻意**不动**补参状态 —— 空消息通常只是误触，不该把用户正在补的
             # 参数丢掉（超时自会作废，见 liz_bot/pending.py）。
@@ -257,11 +269,11 @@ class MyClient(botpy.Client):
             #
             # ⚠️ 未配置 key（``LIZ_AI_API_KEY``）时 ``should_handle`` 为假，
             #    整段跳过，行为与从前**完全一致**。
-            if ai_chat.should_handle(message.content, session_key):
+            if ai_chat.should_handle(content, session_key):
                 # ⚠️ 会话键必须传进去：AI 的**滑动窗口**与**好感度**都按它索引
                 #    （见 liz_bot/ai_context.py、liz_bot/affinity.py）。
                 #    不传 ⇒ 每条消息都是单轮、且不记好感度（行为与从前一致）。
-                answer = await ai_chat.reply(message.content, session_key)
+                answer = await ai_chat.reply(content, session_key)
                 if answer is not None:
                     # ⚠️ 走 :meth:`_send_bubbles` 而不是 ``message.reply()``：
                     #    一次回复可能拆成 2~3 条短消息（2026-09-29 用户要求
@@ -270,7 +282,7 @@ class MyClient(botpy.Client):
                     return
                 # AI 不可用 / 调用失败 ⇒ 落到下面走原逻辑，行为与从前一致
 
-            elif ai_chat.should_swallow(message.content, session_key):
+            elif ai_chat.should_swallow(content, session_key):
                 # ⚠️ **AI 黑名单**（2026-09-29 用户要求）：直接吞掉，一个字都不回。
                 #    为什么不只靠 should_handle 为假「让路」：让路会落到下面，
                 #    而非指令消息在下面会被 reply_text 回一句
@@ -290,7 +302,7 @@ class MyClient(botpy.Client):
                 # ``rich=True`` 允许把结果渲染成图片：判定细节是 5 列表格，
                 # 靠空格对齐在 QQ 的比例字体下**必然错位**，出图才看得清。
                 reply = await reply_text(
-                    message.content, session_key=session_key, rich=True,
+                    content, session_key=session_key, rich=True,
                     notify=lambda text: self._notify(message, text))
 
                 if isinstance(reply, RichReply):
