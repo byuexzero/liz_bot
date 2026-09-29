@@ -293,6 +293,19 @@ _SCHEMA: dict[str, tuple[type, tuple[str, ...]]] = {
     "ai.affinity_note": (str, ("value", "style")),
     # 用户**主动问**好感度时的回复（见 ai_chat.reply 的第 0 步，不调 API）。
     "ai.affinity_ask": (str, ("value", "label")),
+    # ---- 长期记忆（2026-09-29）----
+    # ⚠️ 记忆与好感度**共用同一个落盘文件**（见 liz_bot/affinity.py），
+    #    但渲染成独立的块：好感度调冷暖，记忆提供话题素材。
+    # 抽取请求的 system 提示（只在一段对话过期时调一次，见 ai_chat.extract_memories）。
+    # {limit} = 最多产出几条。
+    "ai.memory_system": (str, ("limit",)),
+    # 注入系统提示的「你记得对方的事」一段（**用户看不到**）。{items} 是多行短句。
+    "ai.memory_note": (str, ("items",)),
+    # 用户**主动问**「你记得我什么」而**一条记忆都没有**时的回复。
+    "ai.memory_empty": (str, ()),
+    # 用户主动问记忆时的回复。{items} 是多行短句。与 affinity_ask 同理，不调 API
+    # —— 让模型转述记忆必然记不全、还会自己编。
+    "ai.memory_recall": (str, ("items",)),
     # ---- 合规兜底（2026-09-29）----
     # 这两条是**固定推托**，用于「合规原因导致说不出话」的场合。
     # ⚠️ 设计要点：它们**不含任何可能被平台拒的内容**（无 URL、无敏感词），

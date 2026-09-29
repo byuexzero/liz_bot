@@ -13,11 +13,25 @@
 
 文件长这样（``AI_CHAT_DIR/affinity/<清洗名>.<短哈希>.txt``）::
 
-    # Liz 好感度（自动生成）
+    # Liz 好感度与记忆（自动生成）
     affinity=12
     calls=37
+    mem=主玩键盘，常打 143 紫谱||上夜班，作息比较乱
+    updated=2026-09-29T20:11:03
 
 ⚠️ **裸写一个整数也能读**（``12`` ⇒ 好感度 12）—— 想手改数值时不用记格式。
+
+好感度与**长期记忆**为什么在同一个文件
+--------------------------------------
+它们业务上是同一件事（「Liz 对你这个人的印象」），而且都要跨会话持久、
+都要原子写、都要同一把锁。拆成两个文件只会带来「一个写成功、一个没写成功」
+的半吊子状态和额外的锁。记忆以 ``mem=`` 一行、多条用 ``||`` 分隔
+（见 :data:`MEM_SEP` / :func:`parse_memories`）。
+
+⚠️ **记忆有硬上限**（:data:`MEM_MAX_ITEMS` 条 / :data:`MEM_MAX_CHARS` 字每条）。
+原因不在磁盘，而在**提示词体积** —— 记忆块会被人设一起塞进 system_prompt，
+而 ``liz_bot.ai_chat.MAX_PROMPT_CHARS`` 有「人设 + 记忆 + 满窗口必须装得下」
+的硬约束（见 ``test_cost_budget``）。超出上限时**丢最旧的**。
 
 为什么落盘、而会话窗口放内存
 ----------------------------
@@ -106,10 +120,33 @@ def _ensure_dir() -> None:
 # 读写
 # ---------------------------------------------------------------------------
 
+#: 记忆在文件里的键名。**一个键、多条、用 :data:`MEM_SEP` 分隔** ——
+#: 刻意不做成「每行一条」：``_parse`` 是逐行 ``partition("=")`` 的，
+#: 让 ``mem=`` 占一行、值里再放多条，改动面最小，也不会和别的键混。
+_MEM_KEY = "mem"
+
+#: 记忆之间的分隔符。选 ``||`` 是因为它几乎不可能出现在自然语言里，
+#: 而单个 ``|`` 太常见。写入时会先把记忆里出现的分隔符清洗掉。
+MEM_SEP = "||"
+
+#: 单条记忆的字符上限。超长的一律截断 —— 记忆是「一句提醒」，不是日记。
+#: 定 60 的依据：一条有用的记忆（「主玩键盘，常打 143 紫谱」）约 15~25 字，
+#: 60 足够容纳稍长的表述，又不至于一条就吃掉半个记忆块。
+MEM_MAX_CHARS = 60
+
+#: 最多留几条记忆。**这是硬上限** —— 记忆块要和人设、窗口一起挤
+#: :data:`liz_bot.ai_chat.MAX_PROMPT_CHARS`，不封顶会把「贴长文」推进
+#: 「丢历史」分支。超出的**丢最旧的**（``memories`` 按时间先后排列）。
+MEM_MAX_ITEMS = 8
+
 def _parse(raw: str) -> tuple[int, int]:
     """解析文件内容 → ``(好感度, 调用数)``。**任何异常都退回中性值**。
 
     容忍三种写法：``key=value`` 多行、裸整数、空文件/垃圾内容。
+
+    ⚠️ **记忆不由本函数解析** —— 它返回的是两个整数，塞不进列表。
+    记忆走 :func:`parse_memories`，两边对同一个 ``mem=`` 行的解析口径
+    **必须一致**（都按 :data:`MEM_SEP` 切、都清洗空项）。
     """
     value, calls = 0, 0
     for line in raw.splitlines():
@@ -133,13 +170,67 @@ def _parse(raw: str) -> tuple[int, int]:
     return max(MIN, min(MAX, value)), max(0, calls)
 
 
-def _write(path: str, value: int, calls: int) -> None:
-    """原子写入（先写临时文件再 ``os.replace``）—— 避免半截文件被读到。"""
+def parse_memories(raw: str) -> list[str]:
+    """从文件内容里取出记忆列表。**任何异常都退回空列表**。
+
+    容错口径与 :func:`_parse` 一致：空行与 ``#`` 注释跳过，
+    ``mem=`` 的值按 :data:`MEM_SEP` 切分，空项丢弃。
+
+    ⚠️ 第三条及以后同名的 ``mem=`` 行**会覆盖前面的** —— 与 ``_parse``
+    对 ``affinity`` 的处理一致（后写的赢）。正常写入只会有一行，
+    这条规则是给「手改坏了」兜底。
+    """
+    found: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, text = line.partition("=")
+        if name.strip().lower() != _MEM_KEY:
+            continue
+        found = _clean_memories(text.split(MEM_SEP))
+    return found
+
+
+def _clean_memories(items: list[str]) -> list[str]:
+    """清洗记忆列表：去空白、丢空项、截断超长、**去重**，并裁到上限。
+
+    去重是必须的：抽取常把同一件事反复说出来（「上夜班」说三次），
+    不去重的话 8 条上限会被同一件事吃光。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = " ".join(str(item or "").split())
+        if not text:
+            continue
+        text = text[:MEM_MAX_CHARS]
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    # 超出上限丢**最旧的**（列表按时间先后排，头部最旧）
+    return out[-MEM_MAX_ITEMS:]
+
+
+def _write(path: str, value: int, calls: int, memories: list[str]) -> None:
+    """原子写入（先写临时文件再 ``os.replace``）—— 避免半截文件被读到。
+
+    ⚠️ **记忆必须和好感度写在同一份文件、同一次原子替换里**。
+    分成两个文件的话，要么多一把锁、要么出现「好感度写成功、记忆没写成功」
+    的半吊子状态 —— 而这两者在业务上本来就是一件事（Liz 对你这个人的印象）。
+    """
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write("# Liz 好感度（自动生成）\n")
+        fh.write("# Liz 好感度与记忆（自动生成）\n")
         fh.write(f"affinity={value}\n")
         fh.write(f"calls={calls}\n")
+        if memories:
+            # ⚠️ 写入前清掉分隔符 —— 记忆是从模型输出里来的，
+            #    万一它写了 ``||``，落盘后再读就会**凭空多出一条**记忆。
+            safe = [m.replace(MEM_SEP, " ") for m in memories if m]
+            if safe:
+                fh.write(f"{_MEM_KEY}={MEM_SEP.join(safe)}\n")
         fh.write(f"updated={datetime.now().isoformat(timespec='seconds')}\n")
     os.replace(tmp, path)
 
@@ -160,27 +251,84 @@ def adjust(key: str | None, delta: int) -> int:
 
     ⚠️ 读-改-写必须持锁：同一个人连发两条时，两个协程可能在同一个
     「读到 12」上各加一次，结果只涨了 1。
+    ⚠️ **记忆必须一起读出来再一起写回去** —— 否则调一次好感度就把
+    记忆抹掉了（``_write`` 是把整个文件重写的）。
     """
     if not key or not delta:
         return load(key)
 
     path = _path(key)
     with _lock:
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                value, calls = _parse(fh.read())
-        except OSError:
-            value, calls = 0, 0
-
+        value, calls, memories = _read_all(path)
         value = max(MIN, min(MAX, value + delta))
         calls += 1
         _ensure_dir()
         try:
-            _write(path, value, calls)
+            _write(path, value, calls, memories)
         except OSError:
             # 写不进去就只影响持久化，本次仍然返回算好的值
             pass
         return value
+
+
+def _read_all(path: str) -> tuple[int, int, list[str]]:
+    """一次读出 ``(好感度, 调用数, 记忆)``。读不动时全用中性值。
+
+    ⚠️ **必须一次读全**：分三次 ``open`` 会在两次读之间被别的协程写掉，
+    拿到的三个值不属于同一个快照（读到「新好感度 + 旧记忆」）。
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except (OSError, ValueError):
+        return 0, 0, []
+    value, calls = _parse(raw)
+    return value, calls, parse_memories(raw)
+
+
+def load_memories(key: str | None) -> list[str]:
+    """读该会话的长期记忆；没有（或读不动）时为空列表。"""
+    if not key:
+        return []
+    return _read_all(_path(key))[2]
+
+
+def add_memories(key: str | None, items: list[str]) -> list[str]:
+    """把新记忆并入该会话并落盘，返回**合并后**的完整列表。
+
+    合并规则（见 :func:`_clean_memories`）：去空白、截断、去重、超上限丢最旧。
+
+    ⚠️ 与 :func:`adjust` 共用同一把锁与同一次读-改-写：
+    抽取记忆与调好感度可能在同一个往返里先后发生，各写一次的话
+    后写的那个会把先写的覆盖掉。
+    """
+    if not key or not items:
+        return load_memories(key)
+
+    path = _path(key)
+    with _lock:
+        value, calls, old = _read_all(path)
+        merged = _clean_memories(old + list(items))
+        _ensure_dir()
+        try:
+            _write(path, value, calls, merged)
+        except OSError:
+            pass
+        return merged
+
+
+def clear_memories(key: str | None) -> None:
+    """清空该会话的记忆（**保留好感度**）。给「忘了我吧」这类请求用。"""
+    if not key:
+        return
+    path = _path(key)
+    with _lock:
+        value, calls, _ = _read_all(path)
+        _ensure_dir()
+        try:
+            _write(path, value, calls, [])
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -218,3 +366,26 @@ def band(value: int) -> int:
 def is_inquiry(text: str) -> bool:
     """这条消息是不是在**主动问**好感度（见 :data:`_INQUIRY`）。"""
     return _INQUIRY in (text or "")
+
+
+#: 询问「你记得我什么」的触发词。**要求「记得」+ 人称同时出现**才命中 ——
+#: 只看「记得」会误伤（「你还记得昨天那个笑话吗」是在聊天，不是在查记忆），
+#: 所以用一个正则而不是单个子串。命中后走**本地读取**，不调 API
+#: （与好感度同理：让模型转述记忆必然记不全、还会自己编）。
+_RECALL_RE = re.compile(
+    r"(你|Liz|liz)"
+    r"[^。！？\n]{0,6}"
+    r"(记得|记住|知道)"
+    r"[^。！？\n]{0,6}"
+    r"(我|咱)"
+)
+
+
+def is_recall(text: str) -> bool:
+    """这条消息是不是在问「你记得我什么」。
+
+    ⚠️ 与 :func:`is_inquiry` 一样**刻意宽松但有边界**：误判的代价只是
+    答一句记忆清单，漏判的代价是用户以为这功能不存在 —— 前者更可接受。
+    但仍加了人称约束，否则「我记得说过…」这种自述也会被当成查询。
+    """
+    return bool(_RECALL_RE.search(text or ""))

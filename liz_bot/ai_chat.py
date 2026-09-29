@@ -225,6 +225,18 @@ BUDGET = _DailyBudget(
 #: 顺便让日志里的「成员」字段一眼能看出这是主动推送而不是某人发的消息。
 _PROACTIVE_BUDGET_KEY = "__proactive__"
 
+#: 记忆抽取占用的**会话键**（见 :func:`extract_memories`）。
+#:
+#: ⚠️ 与主动推送同理、但**必须分开**：两者都吃 :data:`BUDGET` 的全局额度，
+#: 合用一个键会让单会话额度（``per_session``）把它们互相挤掉。
+#: ⚠️ 抽取的额度是**全局**的（所有会话共用一个键），这是刻意的 ——
+#: 否则「一个人刷屏」就能把抽取额度全用光，别人永远沉淀不下记忆。
+_MEMORY_BUDGET_KEY = "__memory__"
+
+#: 记忆抽取的输出上限。比 :data:`MAX_TOKENS` 小得多 ——
+#: 它只需产出几行短句，给 320 是浪费（输出按更贵的价计费）。
+MEMORY_MAX_TOKENS = 120
+
 
 def build_system_prompt(session_key: str | None = None) -> str:
     """拼出这次的系统提示 —— **人设 + 当前关系**。
@@ -233,7 +245,7 @@ def build_system_prompt(session_key: str | None = None) -> str:
     类属性 / 模块常量会在 import 时求值，改文案就不生效了
     （同 ``ai.url_removed`` 的处理，见 ``liz_bot/replies.py`` 的热更新说明）。
 
-    :param session_key: 会话键；给了就附加一行好感度与风格带（用户看不到）。
+    :param session_key: 会话键；给了就附加好感度、风格带与长期记忆（用户看不到）。
     """
     base = replies.text("ai.system_prompt")
     if not session_key:
@@ -243,7 +255,19 @@ def build_system_prompt(session_key: str | None = None) -> str:
     bands = replies.get("ai.style_bands")
     style = bands[affinity.band(value)]
     note = replies.text("ai.affinity_note", value=value, style=style)
-    return f"{base}\n\n{note}"
+
+    parts = [base, note]
+    # ⚠️ 记忆与好感度**共用同一个文件**（见 liz_bot.affinity 的说明），
+    #    但渲染成两块：好感度调**冷暖**，记忆提供**话题素材**，作用完全不同。
+    memories = affinity.load_memories(session_key)
+    if memories:
+        parts.append(
+            replies.text(
+                "ai.memory_note",
+                items="\n".join(f"- {m}" for m in memories),
+            )
+        )
+    return "\n\n".join(parts)
 
 #: ⚠️ 为什么必须显式关思考模式。
 #:
@@ -882,6 +906,17 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
             "ai.affinity_ask", value=value, label=labels[affinity.band(value)]
         )
 
+    # 0b) 主动问「你记得我什么」—— 同样走本地读取，不烧 token。
+    #     ⚠️ 必须排在 :func:`is_inquiry` 之后、预算闸门之前：
+    #     它和好感度是同一类「查本地状态」请求，混进模型只会让它自己编。
+    if session_key and affinity.is_recall(content):
+        memories = affinity.load_memories(session_key)
+        if not memories:
+            return replies.text("ai.memory_empty")
+        return replies.text(
+            "ai.memory_recall", items="\n".join(f"- {m}" for m in memories)
+        )
+
     # 1) 预算闸门。**放在 API 调用之前**，扣的是「预留名额」——
     #    并发时两个协程不会都读到「还剩 1 次」然后各调一次。
     if not BUDGET.allow(session_key):
@@ -961,6 +996,146 @@ async def reply(text: str, session_key: str | None = None) -> str | None:
         _history.append(session_key, "assistant", answer)
         affinity.adjust(session_key, affinity.delta_for(content))
     return answer
+
+
+# ---------------------------------------------------------------------------
+# 长期记忆：抽取（会话过期时触发）
+# ---------------------------------------------------------------------------
+#: 抽取时最多喂多少**轮**对话。超出的丢最旧的。
+#:
+#: 定 12 的依据：一段 60 分钟的群聊很少超过 10 轮，
+#: 而 12 轮 ≈ 500 字 ≈ 400 token —— **抽取的成本主要在这里**，
+#: 所以宁可少喂也不能不封顶。
+MEMORY_SOURCE_TURNS = 12
+
+#: 单次抽取最多产出几条。**必须 ≤ affinity.MEM_MAX_ITEMS**，
+#: 否则一次抽取就能超出存储上限（虽然写入时会裁，但那等于白花 token）。
+MEMORY_MAX_NEW = 3
+
+#: 抽取调用刻意用**更低的温度** —— 这是信息提取，不是创作。
+#: 用 :data:`TEMPERATURE`（1.1）会抽出一堆「他今天心情不错」这种没用的东西。
+MEMORY_TEMPERATURE = 0.3
+
+
+def _memory_messages(
+    history: list[tuple[str, str]], limit: int
+) -> list[dict]:
+    """把一段对话拼成抽取请求的 messages。
+
+    ⚠️ 记录里**只有 user 的话值得抽** —— assistant 是 Liz 自己的回复，
+    从里面抽「事实」只会抽到她的措辞（本项目反复栽在「模型学措辞」上）。
+    所以这里只保留 user 侧，assistant 侧只用来提供上下文。
+    """
+    lines = []
+    for role, text in history[-(MEMORY_SOURCE_TURNS * 2):]:
+        speaker = "对方" if role == "user" else "Liz"
+        lines.append(f"{speaker}：{text}")
+    return [
+        {"role": "system", "content": replies.text("ai.memory_system", limit=limit)},
+        {"role": "user", "content": "\n".join(lines)},
+    ]
+
+
+def _parse_memories_reply(raw: str) -> list[str]:
+    """把抽取结果切成记忆列表。
+
+    ⚠️ 模型**经常不守格式**（会加编号、加解释、加前后缀），所以这里
+    刻意做宽松清洗：剥掉 ``-``/``*``/``123.`` 之类的行首标记与引号，
+    丢掉明显是解释的长句（超 :data:`liz_bot.affinity.MEM_MAX_CHARS` 的截断）。
+    最终的去重/裁剪交给 :func:`liz_bot.affinity.add_memories`。
+    """
+    out: list[str] = []
+    for line in (raw or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        # 剥行首序号 / 列表符号
+        text = re.sub(r"^(?:[-*·•]|\d+[.、)）])\s*", "", text)
+        # 剥包裹的引号（模型爱加）
+        text = text.strip('"“”\'‘’「」')
+        # 丢掉明显是「解释」的行：包含冒号且很长（"这说明：……"）
+        if len(text) > affinity.MEM_MAX_CHARS:
+            text = text[: affinity.MEM_MAX_CHARS]
+        if text:
+            out.append(text)
+    return out
+
+
+async def extract_memories(session_key: str, history: list[tuple[str, str]]) -> None:
+    """从**一段已经过期的对话**里抽出长期记忆并落盘。**失败一律静默**。
+
+    为什么是「过期时抽」而不是「每轮抽」
+    ------------------------------------
+    * 每轮抽 = 每条消息多一次 API 调用 ⇒ 成本翻倍（实测 +¥2.16/月）。
+    * 群聊没有「会话结束」事件，但 :data:`liz_bot.ai_context.DEFAULT_TTL`
+      到点就是它的**自然终点** —— 那段对话不再会被接上，正好该沉淀成记忆。
+    * 缺点：TTL 内一直有人说话就抽不到。**这是刻意的取舍** ——
+      一直热聊的会话，内容还在窗口里，本来就不缺上下文。
+
+    ⚠️ **必须过预算闸门**，否则长时间挂机能偷偷刷掉当日额度；
+    但**不能占用会话额度**（那条额度是给「回复」用的），
+    所以用 :data:`_MEMORY_BUDGET_KEY` 记账 —— 与主动推送同一手法。
+
+    :param session_key: 会话键（``群:成员``）。
+    :param history: 该会话过期时的完整窗口。
+    """
+    if not history or not session_key:
+        return
+    settings = _settings_or_none()
+    if settings is None:
+        return
+
+    # 只抽「对方说过话」的会话 —— 全是 Liz 主动发言的记录没东西可抽
+    if not any(role == "user" for role, _ in history):
+        return
+
+    messages = _memory_messages(history, MEMORY_MAX_NEW)
+    payload = {
+        "model": settings.model,
+        "messages": messages,
+        "max_tokens": MEMORY_MAX_TOKENS,
+        "temperature": MEMORY_TEMPERATURE,
+        "enable_thinking": False,
+    }
+
+    # ⚠️ 预算：**在调用前预留**（与 reply 同一约定）。额度耗尽就整个跳过 ——
+    #    「记忆」是锦上添花，绝不该挤掉当天的正常对话额度。
+    if not BUDGET.allow(_MEMORY_BUDGET_KEY):
+        _log.info("记忆抽取跳过：当日额度已用尽")
+        return
+
+    data, kind = await _post(settings, payload)
+    if kind != "ok" or data is None:
+        # 静默：抽取失败不影响任何用户可见行为
+        _log.info("记忆抽取失败（%s），已跳过", kind)
+        return
+
+    raw = _extract(data, _MEMORY_BUDGET_KEY)
+    items = _parse_memories_reply(raw)
+    if not items:
+        return
+    total = affinity.add_memories(session_key, items[:MEMORY_MAX_NEW])
+    _log.info("记忆已更新：+%d 条，共 %d 条", len(items), len(total))
+
+
+async def reap_and_remember() -> None:
+    """把**刚过期**的会话抽成长期记忆。**失败一律静默**。
+
+    调用时机：每次有新的群消息进来时（见 :func:`liz_bot.qqgroupbot`）。
+    用「顺手清理」而不是「定时任务」，是因为定时任务要额外起协程、
+    还要处理重复启动（``on_ready`` 心跳重连会再触发一次，踩过）；
+    而顺带判一下既免费，又天然与消息量成正比。
+
+    ⚠️ 用 ``asyncio.gather(..., return_exceptions=True)`` 兜住单个失败 ——
+    某一个人的抽取炸了，不该连累同期过期的其他人。
+    """
+    expired = _history.reap_expired()
+    if not expired:
+        return
+    await asyncio.gather(
+        *(extract_memories(key, items) for key, items in expired),
+        return_exceptions=True,
+    )
 
 
 #: 主动开口时附加的**临时指令**（2026-09-29）。

@@ -180,6 +180,34 @@ class HistoryStore:
         with self._lock:
             self._items.pop(key, None)
 
+    def reap_expired(self) -> list[tuple[str, list[tuple[str, str]]]]:
+        """摘掉并返回**刚过期**的会话。**长期记忆的抽取就挂在这里**。
+
+        为什么用「过期」而不是「显式结束」
+        ----------------------------------
+        群聊没有「会话结束」这个事件 —— 用户说完就走，不会告别。
+        唯一的自然终点就是 :data:`DEFAULT_TTL` 到点：60 分钟没人说话，
+        这段对话在窗口里已经没有意义了（下一条消息不会再接它）。
+
+        ⚠️ **必须在窗口被清掉之前拿到内容** —— :meth:`append` 里的
+        ``_sweep`` 是静默删的，删完就再也抽不出记忆了。所以这个方法
+        由调用方在**每次 append 之前**主动调一次，而不是等自动回收。
+
+        :returns: ``[(会话键, [(role, content), …]), …]``。
+            只返回**确实有对话内容**的会话（空窗口没必要抽）。
+        """
+        now = time.monotonic()
+        reaped: list[tuple[str, list[tuple[str, str]]]] = []
+        with self._lock:
+            for key in list(self._items):
+                session = self._items[key]
+                if now - session.updated_at <= self.ttl:
+                    continue
+                if session.items:
+                    reaped.append((key, list(session.items)))
+                del self._items[key]
+        return reaped
+
     def clear(self) -> None:
         """清空全部（测试用）。"""
         with self._lock:

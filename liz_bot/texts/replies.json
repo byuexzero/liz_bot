@@ -19,7 +19,14 @@
   },
   "maimai": {
     "unparsed": "这条 Liz 看不懂呢",
-    "sync_names": ["无", "FS", "FS+", "FDX", "FDX+", "同步游玩"],
+    "sync_names": [
+      "无",
+      "FS",
+      "FS+",
+      "FDX",
+      "FDX+",
+      "同步游玩"
+    ],
     "bad_params": "还差几个参数呢\n{usage}",
     "too_many_params": "参数给得有点多了呢\n{usage}",
     "upload_usage": "二维码\n└─ 示例: SGWCMAID 开头那串\n乐曲ID\n├─ 范围: 1-99999\n└─ 示例: 11451\n难度\n├─ 可选: 绿/黄/红/紫/白（或 0-4）\n└─ 示例: 紫\n完成度\n├─ 范围: 0.00-101.00%\n└─ 示例: 100.42\nDX分数\n├─ 范围: 0-9999999\n└─ 示例: 3120\n连击状态（可省）\n├─ 可选: none/fc/fc+/ap/ap+\n└─ 示例: ap+\n同步状态（可省）\n├─ 可选: 无/FS/FS+/FDX/FDX+/同步游玩\n└─ 示例: FS+\n最大连击（可省）\n├─ 范围: 0-999999\n└─ 示例: 1200\n只给二维码 → 用本会话最近一次 /估分",
@@ -54,7 +61,13 @@
     "upload_no_readback": "⚠️ Liz 看不清塔里，不知道堆没堆进去"
   },
   "judge": {
-    "difficulties": ["Basic", "Advanced", "Expert", "Master", "Re:Master"],
+    "difficulties": [
+      "Basic",
+      "Advanced",
+      "Expert",
+      "Master",
+      "Re:Master"
+    ],
     "header": "《{title}》 {difficulty} {level} · {charter}",
     "scale": "理论分 {base_score} · break 加成 {bonus_score}",
     "row_count": "数量",
@@ -150,7 +163,11 @@
     "affinity_ask": "好感度是 {value} 呢。{label}",
     "reply_blocked": "……这个话题，Liz 就不接了呢。",
     "reply_rejected": "……刚才那句，Liz 就不说了。",
-    "reply_too_long": "……太长了，Liz 看不完呢。"
+    "reply_too_long": "……太长了，Liz 看不完呢。",
+    "memory_system": "你是一台信息提取器。下面是一段群聊记录，请从中挑出**关于「对方」这个人**、以后还用得上的事实。\n\n只挑这类：身份/习惯/偏好/长期状态/正在做的事（例如「上夜班」「主玩键盘」「在冲 143 紫谱」「想换耳机，预算 500」）。\n不要挑：一时的心情、当天的琐事、玩笑、对别人的评价、任何隐私敏感信息（真实姓名/住址/电话/账号）。\n不要挑：只在这次对话里成立的临时信息（「今天下雨了」）。\n\n输出格式：一行一条，每条是一个短句（不超过 20 字），**不要编号、不要解释**。没有值得记的就**输出一个空行**。最多 {limit} 条。\n",
+    "memory_note": "\n\n【你记得对方的事】\n{items}\n（以上是长期印象。**只在相关时自然提一句**，不要主动罗列、不要一次全说出来。）",
+    "memory_empty": "……Liz 还不太了解你呢",
+    "memory_recall": "Liz 记得这些：\n{items}"
   },
   "commands": {
     "help": "/help — 查看指令列表",
