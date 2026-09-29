@@ -22,6 +22,11 @@ __pycache__/
 # 前者匹配任意层级，同时覆盖容器版的 deploy/data/ai_chat/。
 ai_chat/
 
+# 提审材料（QQ 开放平台自测报告）。由 _tools 下的脚本从代码/指令表生成，
+# 是**产出物**而非源码 —— 换了指令表就要重生成，进仓库只会变成过期副本。
+# 且它含机器人与群的实际 id，仓库是 public。
+Liz自测报告.xlsx
+
 # 容器版的数据卷（deploy/docker-compose.yml 的 ./data:/data）。
 # 里面是日志与会话历史；bot_log/ 那条已覆盖日志，这条兜住其余内容。
 deploy/data/
