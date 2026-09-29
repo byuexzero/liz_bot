@@ -220,6 +220,17 @@ DEPLOY_LOCAL.md
 DEPLOY_PAAS.md
 maimai/README.md
 
+# `AI黑名单.md` —— **含真实群 / 成员 openid**，绝不能进公开仓库（2026-09-29）。
+#
+# 它记录「谁被拉黑了、为什么、怎么把前缀收窄成精确 openid」，
+# 里面必然出现 `群openid` 与 `member_openid`。仓库是 public，
+# 这份名单一旦推上去，等于把「谁被机器人拉黑了」公开 ——
+# 与 `ai_blacklist.py` 刻意把名单放数据卷、不进 git 是同一条理由。
+#
+# ⚠️ 它和 `内容合规兜底.md` / `Liz人设提示词.md` 不同：那两份是纯设计文档，
+#    已核对过**不含任何 openid**，所以是随仓库分发的。别照着它们放行这份。
+AI黑名单.md
+
 # 部署产物本身**仍然随仓库分发**（deploy/ 下的 systemd 单元、
 # docker-compose.yml、.env.example）—— 它们是可执行的配置，不是说明文档。
 # 注意 deploy/ 整体被 .dockerignore 排除，但**不在** .gitignore 里。

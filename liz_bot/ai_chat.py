@@ -79,6 +79,7 @@ from liz_bot.command_router import (
     PREFIX_NORMAL,
     has_pending,
 )
+from liz_bot.text_layout import display_width
 
 _log = logging.get_logger()
 
@@ -442,6 +443,153 @@ def sanitize(text: str) -> str:
             "(?:" + re.escape(placeholder) + r"[\s、,，]*){2,}", placeholder, out
         )
     return out.strip()
+
+
+# ---------------------------------------------------------------------------
+# 多气泡（把一次回复拆成几条短消息发）
+# ---------------------------------------------------------------------------
+#: 一次回复最多拆几条。
+#:
+#: ⚠️ **上限不是随便定的**：群聊被动回复「每条消息可回复次数」官方上限就是 **5**
+#: （见 QQ 开放平台《消息收发概述》频率与时效规则，群聊 5 分钟 / 5 次）。
+#: 而 ``msg_seq`` 的分配是 **1~3 给气泡、4 给 `#上传` 预告、5 给合规兜底**
+#: （见 ``qqgroupbot`` 的常量）。再加气泡就得动兜底那一格 —— 不值当。
+MAX_BUBBLES = 3
+
+#: 短于这个**显示宽度**（CJK 算 2 格）的回复**不拆**。
+#:
+#: 它拦的是「很短但不止一句」的回复 —— 「嗯。好。」「好。谢谢。」拆开就只剩
+#: 标点和单字了。**单句回复不靠它拦**（那种由 :func:`split_bubbles` 的
+#: 「句子数 < 2」判掉）。
+#:
+#: 定 20 的依据：人设的示例里，**两句话**的回复宽度都在 22~42，
+#: 一句话的都在 8~30（但句子数是 1）。20 正好把前者全放过去、把
+#: 「嗯。好。」这类挡在外面。
+MIN_SPLIT_WIDTH = 20
+
+#: 句末标点 —— 拆气泡在这里切。
+_SENTENCE_END = "。！？…～"
+
+#: 一句话：**至少一个非句末标点的字符**，后面跟任意个句末标点。
+#:
+#: ⚠️ 不能直接按 :data:`_SENTENCE_END` 逐字切：``……`` 会被切成两个
+#: 纯标点的碎片（``一百五十七。……这也算数吗？`` ⇒ 3 段，中间那段是「……」）。
+#: 本正则只匹配「有内容的段」，**夹在中间和被跳过的纯标点由
+#: :func:`_split_sentences` 补回来**（不然会**静默吞掉**开头的「……」）。
+_SENTENCE_RE = re.compile(r"[^" + _SENTENCE_END + r"]+[" + _SENTENCE_END + r"]*")
+
+
+def _merge_orphans(parts: list[str]) -> list[str]:
+    """把「纯标点」的段并回**相邻**的段（``……`` 这类）。"""
+    out: list[str] = []
+    for part in parts:
+        if out and not part.strip(_SENTENCE_END):
+            out[-1] += part
+        else:
+            out.append(part)
+    # 开头的纯标点没有「前一段」可并（``……这也算数吗？``）⇒ 并进后一段
+    if len(out) > 1 and not out[0].strip(_SENTENCE_END):
+        out[1] = out[0] + out[1]
+        out.pop(0)
+    return out
+
+
+def _split_sentences(text: str) -> list[str]:
+    """按句末标点切成句子（每段自带句末标点，纯标点段已并回）。
+
+    ⚠️ 必须**补回正则跳过的部分**：:data:`_SENTENCE_RE` 要求「有内容」，
+    所以整段开头/中间的纯标点不在任何 match 里。不补的话
+    ``……这也算数吗？`` 会变成 ``这也算数吗？`` —— **把 Liz 的语气吞掉**，
+    而且不报错。
+    """
+    parts: list[str] = []
+    pos = 0
+    for match in _SENTENCE_RE.finditer(text):
+        if match.start() > pos:
+            parts.append(text[pos:match.start()] + match.group(0))
+        else:
+            parts.append(match.group(0))
+        pos = match.end()
+    if pos < len(text):
+        parts.append(text[pos:])
+    return _merge_orphans(parts)
+
+
+def _pack(sentences: list[str], limit: int) -> list[str]:
+    """把句子**按宽度均分**成 ``limit`` 段（连续、不重排）。
+
+    「均分」而不是「凑够一段再开下一段」：后者会让最后一段只剩一两个字，
+    发出来像个半截句子，比不分还生硬。
+    """
+    count = min(limit, len(sentences))
+    if count <= 1:
+        return ["".join(sentences)]
+
+    total = sum(display_width(s) for s in sentences)
+    target = total / count
+
+    out: list[str] = []
+    buf: list[str] = []
+    width = 0
+    for index, sentence in enumerate(sentences):
+        remaining_sentences = len(sentences) - index
+        remaining_slots = count - len(out)
+        # 剩下的句子必须够填满剩下的段，否则提前收尾（防止末段为空）
+        must_close = remaining_sentences <= remaining_slots
+        buf.append(sentence)
+        width += display_width(sentence)
+        if must_close or (width >= target and len(out) < count - 1):
+            out.append("".join(buf))
+            buf, width = [], 0
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
+def split_bubbles(text: str, limit: int = MAX_BUBBLES) -> list[str]:
+    """把模型的一次回复拆成 1~``limit`` 条短消息。
+
+    **为什么要拆**（2026-09-29 用户要求）：一条长回复砸过去很像机器；
+    真人聊天是一条一条蹦的。「多回几条」能明显减少生硬感。
+
+    两条路径，**先看模型自己有没有分行**：
+
+    1. 模型自己写了多行（人设里教过）⇒ **逐行就是气泡**，超出的并进最后一条。
+       模型主动分行说明它本来就想分两条说，这比我们猜更准。
+    2. 只有一行 ⇒ 短于 :data:`MIN_SPLIT_WIDTH` 不拆；够长就按句末标点
+       **均分**成 2~3 段。
+
+    ⚠️ 纯函数、不联网、不抛异常 —— 拆错了最多是语气怪一点，绝不该让回复发不出去。
+
+    :param text: 模型输出（已过 :func:`sanitize`）。
+    :param limit: 最多几条。
+    :returns: 非空字符串列表；输入为空时返回 ``[]``（调用方据此跳过发送）。
+    """
+    if limit < 1:
+        limit = 1
+
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+
+    if not lines:
+        return []
+
+    if len(lines) > 1:
+        # 模型自己分了行 —— 尊重它，只做「别超过上限」
+        if len(lines) <= limit:
+            return lines
+        return lines[: limit - 1] + ["\n".join(lines[limit - 1:])]
+
+    single = lines[0]
+    if display_width(single) <= MIN_SPLIT_WIDTH:
+        return [single]
+
+    sentences = _split_sentences(single)
+    if len(sentences) < 2:
+        return [single]
+
+    bubbles = _pack(sentences, limit)
+    return [b for b in (b.strip() for b in bubbles) if b] or [single]
 
 
 def _member_of(session_key: str | None) -> str:

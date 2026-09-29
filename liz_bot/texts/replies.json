@@ -126,6 +126,7 @@
       "……嗯。Liz 在"
     ],
     "not_command": "Liz 看不懂呢：“{content}”",
+    "image_reply": "……图 Liz 看不见呢。文字说给 Liz 听吧",
     "error": "Liz 没处理成功呢：{error}"
   },
   "ai": {

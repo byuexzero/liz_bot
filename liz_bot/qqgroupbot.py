@@ -109,13 +109,18 @@ def _get_dup_cache() -> ExpiringCache:
 #: ``message.reply()`` 内部就是 ``post_group_message(msg_id=..., msg_seq=1)``，
 #: 而「相同的 msg_id + msg_seq 重复发送会失败」（见 botpy ``api.py``），
 #: 所以出错时要用**另一个** seq 才能发得出去。
+#:
+#: ⚠️ 2 与 :data:`_BUBBLE_MSG_SEQ_BASE` 起的 AI 气泡**共用编号** —— 安全，
+#: 因为同一条 ``msg_id`` 要么走 AI 分支、要么走指令分支，不会两者都走
+#: （AI 分支处理完直接 ``return``）。真正的约束只有一条：
+#: **同一个 msg_id 下不许重复用同一个 seq**。
 _ERROR_MSG_SEQ = 2
 
 #: 发图失败、退回文字版时用的 ``msg_seq``。
 #:
 #: 用 3 而不是 1 或 2：``seq=1`` 可能已被那次发图占用（发图本身走
 #: ``msg_id + msg_seq=1``），``seq=2`` 是 :data:`_ERROR_MSG_SEQ` 的地盘。
-#: 五个 seq 互不相同，任何一条路径都能发得出去。
+#: 五个 seq 互不相同，任何一条路径都能发得出去。（与 AI 气泡共用编号的理由同上。）
 _RICH_FALLBACK_MSG_SEQ = 3
 
 #: 「任务进行中先发一条」用的 ``msg_seq``（见 :meth:`MyClient._notify`）。
@@ -130,6 +135,28 @@ _NOTIFY_MSG_SEQ = 4
 #: 回复被平台拒发时，用 5 补一条固定推托。⚠️ 群聊被动回复的 ``msg_seq``
 #: 上限就是 5（``1``~``5``），这里正好是最后一个空位 —— **再加路径就得复用**。
 _SAFE_FALLBACK_MSG_SEQ = 5
+
+#: AI 回复的**气泡**从哪个 ``msg_seq`` 开始（见 :meth:`MyClient._send_bubbles`）。
+#:
+#: ⚠️⚠️ 坑位只有 5 个，来源是官方文档《消息收发概述》的「频率与时效规则」：
+#: **群聊被动消息 —— 有效期 5 分钟，每条消息可回复 5 次**。分配表：
+#:
+#: ====  ==========================================================
+#: seq   用途
+#: ====  ==========================================================
+#: 1~3   AI 回复的气泡（最多 ``ai_chat.MAX_BUBBLES`` 条）
+#: 4     ``#上传`` 的「预计等待」预告
+#: 5     合规兜底（被平台拒发时补的固定推托）
+#: ====  ==========================================================
+#:
+#: ⇒ ``ai_chat.MAX_BUBBLES`` **不能超过 3**，否则会顶掉兜底那一格。
+_BUBBLE_MSG_SEQ_BASE = 1
+
+#: 气泡之间的间隔（秒）。
+#:
+#: 真人不会在 50 毫秒内连发三条 —— 不加间隔的话，三条气泡几乎同时到达，
+#: 反而比一条整段更机械（2026-09-29 用户要求「减少生硬感」）。
+_BUBBLE_GAP_SECONDS = 0.4
 
 
 def _session_key(message: GroupMessage) -> str:
@@ -178,11 +205,32 @@ class MyClient(botpy.Client):
                 return
             cache.add(dup_key)
 
+        # 附件诊断：**只记数量与类型，绝不记正文**（群里的话不该进日志）。
+        # ⚠️ 为什么值得专门记：QQ 群聊的图片消息到底以什么形态送达
+        #    （``content`` 为空？``attachments`` 有值？）**在文档里没有明说**，
+        #    只能靠实测确认。不记的话「发图没反应」永远只能猜。
+        if message.attachments:
+            _log.info(
+                "收到带附件的 @ 消息：%d 个，类型 %s，正文 %d 字",
+                len(message.attachments),
+                [a.content_type for a in message.attachments],
+                len(message.content.strip()),
+            )
+
         if message.content.strip() == "":
             # 空消息时的随机回复候选，文案见 replies.json 的 bot.none_reply。
             # 刻意**不动**补参状态 —— 空消息通常只是误触，不该把用户正在补的
             # 参数丢掉（超时自会作废，见 liz_bot/pending.py）。
-            await message.reply(content=random.choice(replies.get("bot.none_reply")))
+            #
+            # ⚠️ **只发了一张图**（有附件、没正文）要单独回一条（2026-09-29 用户要求）：
+            #    Liz **没有识图能力**，但「@ 了没反应」在本项目里是最容易被当成
+            #    **崩溃**的现象（2026-09-28 那次「疑似崩溃」就是这个形状）。
+            #    所以宁可明说看不见，也不要用 bot.none_reply 的随机寒暄 ——
+            #    那等于**假装看见了**，用户会以为它能识图，下一条继续发图。
+            if message.attachments:
+                await message.reply(content=replies.text("bot.image_reply"))
+            else:
+                await message.reply(content=random.choice(replies.get("bot.none_reply")))
         else:
             # 会话键**提前算一次**：AI 分支与下面的指令分发都要用，
             # 而且必须算得**完全一样** —— 两处不一致的话，补参状态就会
@@ -210,21 +258,10 @@ class MyClient(botpy.Client):
                 #    不传 ⇒ 每条消息都是单轮、且不记好感度（行为与从前一致）。
                 answer = await ai_chat.reply(message.content, session_key)
                 if answer is not None:
-                    try:
-                        await message.reply(content=answer)
-                    except Exception:
-                        # ⚠️ **合规兜底第 3 层**（2026-09-29）。
-                        #    发不出去 = 平台把这条内容拒了（或网络真挂了）。
-                        #    原来这里**只记日志** ⇒ 群里一个字都没有，
-                        #    用户看到的就是「Liz 又不理人了」——
-                        #    与 2026-09-28 那次「疑似崩溃」是同一个现象。
-                        # ⇒ 补一条**固定的、安全的**推托（常量，不含任何
-                        #    可能被拒的内容，所以不会二次被拒）。
-                        #    网络真挂时这条同样发不出去，日志里能看到两条失败。
-                        _log.exception("AI 回复发送失败，改发固定推托")
-                        await self._send_safe(
-                            message, replies.text("ai.reply_rejected")
-                        )
+                    # ⚠️ 走 :meth:`_send_bubbles` 而不是 ``message.reply()``：
+                    #    一次回复可能拆成 2~3 条短消息（2026-09-29 用户要求
+                    #    「多回几条减少生硬感」）。失败兜底也收在里面。
+                    await self._send_bubbles(message, answer)
                     return
                 # AI 不可用 / 调用失败 ⇒ 落到下面走原逻辑，行为与从前一致
 
@@ -281,6 +318,56 @@ class MyClient(botpy.Client):
             msg_type=0,
             content=text,
         )
+
+    async def _send_bubbles(self, message: GroupMessage, text: str) -> None:
+        """把 AI 的回复拆成 1~3 条短消息逐条发出。
+
+        **为什么要拆**（2026-09-29 用户要求）：一次砸一整段很像机器，
+        真人聊天是一条一条蹦的。拆开的规则在 :func:`ai_chat.split_bubbles`。
+
+        ⚠️ **为什么用被动回复而不是「主动消息」**：主动消息虽然能发更多条，
+        但有两个硬伤 ——
+        ① 用户可以在 QQ 客户端关掉「允许主动发送」，关掉之后主动消息
+           **一律发送失败**（官方文档原话），又一个**静默失败**；
+        ② 消耗每群每日 1000 条的配额。
+        而被动回复**每条 @ 最多能回 5 次**（官方文档：群聊 5 分钟 / 5 次），
+        2~3 条气泡完全够用，还不花配额。
+
+        ⚠️ **任一条发不出去就中止剩下的**，并补一条固定推托
+        （:meth:`_send_safe`，``msg_seq=5``）—— 半截话比不说更难受，
+        而且「说不出话」正是本项目最容易伪装成「崩溃」的现象。
+
+        本方法**刻意不抛异常**：失败已经兜住了，再往外抛只会让外层
+        当成「处理消息失败」并再回一句错误提示，同一件事报两次。
+        """
+        bubbles = ai_chat.split_bubbles(text)
+        if not bubbles:
+            return
+
+        for index, bubble in enumerate(bubbles):
+            if index:
+                # 让气泡之间有个人味儿的间隔（见 _BUBBLE_GAP_SECONDS）
+                await asyncio.sleep(_BUBBLE_GAP_SECONDS)
+            try:
+                await self.api.post_group_message(
+                    group_openid=message.group_openid,
+                    msg_id=message.id,
+                    msg_seq=_BUBBLE_MSG_SEQ_BASE + index,
+                    msg_type=0,
+                    content=bubble,
+                )
+            except Exception:
+                # ⚠️ **合规兜底第 3 层**（2026-09-29）。发不出去 = 平台把这条
+                #    内容拒了（或网络真挂了）。补一条**固定的、安全的**推托
+                #    —— 它是常量、不含 URL、不含敏感词，所以不会二次被拒。
+                #    网络真挂时这条同样发不出去，日志里能看到两条失败。
+                _log.exception(
+                    "AI 回复发送失败，改发固定推托（第 %d/%d 条）",
+                    index + 1,
+                    len(bubbles),
+                )
+                await self._send_safe(message, replies.text("ai.reply_rejected"))
+                return
 
     async def _send_safe(self, message: GroupMessage, text: str) -> None:
         """补发一条**固定文案** —— 内容合规兜底的最后一层。
