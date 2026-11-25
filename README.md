@@ -206,6 +206,13 @@ python _tools/check_wheels.py           # 依赖在 linux/amd64 上是否需要�
 python _tools/local_rehearsal.py        # 用「云端的方式」在本地跑一遍
 ```
 
+## 创作者
+
+| | GitHub |
+|---|---|
+| 项目作者 | [@byuexzero](https://github.com/byuexzero) |
+| 共同创作者 | [@yuanweishupian535](https://github.com/yuanweishupian535) |
+
 ## 鸣谢
 
 | 上游 | 用途 |
@@ -222,7 +229,7 @@ python _tools/local_rehearsal.py        # 用「云端的方式」在本地跑�
 **GNU Affero General Public License v3.0** —— 全文见 [`LICENSE`](LICENSE)
 
 ```
-Copyright (C) 2026 byuexzero
+Copyright (C) 2026 byuexzero, yuanweishupian535
 ```
 
 | 你可以 | 但必须 |
