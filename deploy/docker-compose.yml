@@ -78,7 +78,7 @@ services:
       #
       # ⚠️ 它**不在 git 里**（`.gitignore` 与 `.dockerignore` 都排除了整个包），
       #    所以 `_tools/deploy_update.sh` 的 git 合并**碰不到它**，必须单独上传：
-      #        LIZ_NO_MUX=1 bash _tools/deploy_maimai.sh ubuntu@43.142.50.149 /opt/liz_bot
+      #        LIZ_NO_MUX=1 bash _tools/deploy_maimai.sh ubuntu@<服务器> /opt/liz_bot
       #    没上传 / 挂载失败时，`#上传` 会回一句「Liz 现在还够不到 7sRef～」
       #    （见 replies.json 的 maimai.upload_no_toolchain）。
       #

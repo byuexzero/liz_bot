@@ -417,7 +417,7 @@ ssh ubuntu@<服务器> 'cat /home/ubuntu/probe_proactive.log'
 
 ```
 LIZ_PROACTIVE_TIMES=21:00
-LIZ_PROACTIVE_GROUPS=65E8F7FB9EA66138D9B3F8B913B65D96
+LIZ_PROACTIVE_GROUPS=<群openid>
 ```
 
 ### 几个刻意的设计
